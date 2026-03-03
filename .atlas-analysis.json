@@ -1,0 +1,83 @@
+{
+  "projectType": "framework",
+  "projectName": "go-fast",
+  "projectDescription": "A Go HTTP framework that eliminates handler boilerplate through tag-based parameter resolution",
+  "theme": "palm",
+  "primaryColor": "#00ADD8",
+  "lightColor": "#5DC9E2",
+  "darkColor": "#00758F",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/adapter",
+              "concepts/resolvers",
+              "concepts/type-conversion"
+            ]
+          },
+          {
+            "group": "Resolvers",
+            "pages": [
+              "resolvers/overview",
+              "resolvers/body",
+              "resolvers/header",
+              "resolvers/query",
+              "resolvers/path",
+              "resolvers/cookie",
+              "resolvers/form",
+              "resolvers/file"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/comparison",
+              "guides/examples",
+              "guides/error-handling",
+              "guides/testing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Package API",
+            "pages": [
+              "api/handler",
+              "api/context",
+              "api/resolvers"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Tag-based parameter resolution (body, header, query, path, cookie, form, file)",
+    "Automatic type conversion for primitives (string, int, bool, float, pointers)",
+    "Zero-reflection runtime overhead (analysis happens once at startup)",
+    "Standard http.HandlerFunc output compatible with any Go router",
+    "Plain function handlers without framework-specific context parameters",
+    "Automatic error handling and JSON response encoding"
+  ],
+  "publicApiSurface": [
+    "handler.Adapt(fn) - Main adapter function",
+    "handler.Context - Request context wrapper",
+    "Resolver tags: json:\"body\", json:\"header:<name>\", json:\"query:<name>\", json:\"path:<name>\", json:\"cookie:<name>\", json:\"form:<name>\", json:\"file:<name>\""
+  ]
+}
