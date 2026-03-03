@@ -1,0 +1,222 @@
+---
+title: Type conversion
+description: Automatic string-to-type conversion for primitive fields
+---
+
+String-based resolvers (header, query, path, cookie, form) automatically convert raw string values to the declared Go type of the struct field.
+
+## Supported types
+
+| Go type | Example input | Result |
+|---------|---------------|--------|
+| `string` | `"hello"` | `"hello"` |
+| `bool` | `"true"`, `"1"`, `"false"`, `"0"` | `true`, `true`, `false`, `false` |
+| `int` | `"42"` | `42` |
+| `int8` | `"127"` | `127` |
+| `int16` | `"32000"` | `32000` |
+| `int32` | `"100000"` | `100000` |
+| `int64` | `"9999999999"` | `9999999999` |
+| `uint` | `"42"` | `42` |
+| `uint8` | `"255"` | `255` |
+| `uint16` | `"65535"` | `65535` |
+| `uint32` | `"100000"` | `100000` |
+| `uint64` | `"9999999999"` | `9999999999` |
+| `float32` | `"3.14"` | `3.14` |
+| `float64` | `"3.14159265"` | `3.14159265` |
+| `*int` (pointer) | `"42"` | pointer to `42` |
+| `*string` (pointer) | `"hello"` | pointer to `"hello"` |
+
+<Info>
+  All standard Go primitive types and their pointer variants are supported.
+</Info>
+
+## Empty values
+
+When the raw string is empty (missing header, missing query param), the field receives the **zero value** of its type:
+
+| Type | Zero value |
+|------|------------|
+| `string` | `""` |
+| `int` | `0` |
+| `bool` | `false` |
+| `float64` | `0.0` |
+| `*int` | `nil` |
+
+This means missing optional params don't cause errors — they just get their zero value.
+
+<Note>
+  Use pointer types if you need to distinguish "missing" from "zero". For example, `*int` is `nil` when missing, but `0` when explicitly set to zero.
+</Note>
+
+## Implementation
+
+The conversion logic is in `convertStringToType()`:
+
+```go pkg/handler/resolvers/value_converter.go
+func convertStringToType(raw string, fieldType reflect.Type) (reflect.Value, error) {
+    if fieldType == nil {
+        return reflect.Value{}, fmt.Errorf("field type is nil")
+    }
+
+    // Empty string returns zero value
+    if raw == "" {
+        return reflect.Zero(fieldType), nil
+    }
+
+    switch fieldType.Kind() {
+    case reflect.String:
+        return reflect.ValueOf(raw).Convert(fieldType), nil
+        
+    case reflect.Bool:
+        v, err := strconv.ParseBool(raw)
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        value := reflect.New(fieldType).Elem()
+        value.SetBool(v)
+        return value, nil
+        
+    case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+        v, err := strconv.ParseInt(raw, 10, fieldType.Bits())
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        value := reflect.New(fieldType).Elem()
+        value.SetInt(v)
+        return value, nil
+        
+    case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+        v, err := strconv.ParseUint(raw, 10, fieldType.Bits())
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        value := reflect.New(fieldType).Elem()
+        value.SetUint(v)
+        return value, nil
+        
+    case reflect.Float32, reflect.Float64:
+        v, err := strconv.ParseFloat(raw, fieldType.Bits())
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        value := reflect.New(fieldType).Elem()
+        value.SetFloat(v)
+        return value, nil
+        
+    case reflect.Ptr:
+        // Recursively convert inner type, then wrap in pointer
+        innerValue, err := convertStringToType(raw, fieldType.Elem())
+        if err != nil {
+            return reflect.Value{}, err
+        }
+        ptrValue := reflect.New(fieldType.Elem())
+        ptrValue.Elem().Set(innerValue)
+        return ptrValue, nil
+        
+    default:
+        return reflect.Value{}, fmt.Errorf("unsupported field type %s", fieldType)
+    }
+}
+```
+
+<Info>
+  The function uses `fieldType.Bits()` to determine the size for integer and float parsing, ensuring the correct precision.
+</Info>
+
+## Error behavior
+
+If conversion fails (e.g., `"abc"` for an `int` field), the resolver returns an error and the adapter responds with 400:
+
+```json
+{"error": "resolve query \"page\": strconv.ParseInt: parsing \"abc\": invalid syntax"}
+```
+
+The error message includes:
+- The resolver type (query, header, etc.)
+- The parameter name
+- The underlying Go error from `strconv`
+
+## Examples
+
+### Integers and floats
+
+```go
+type ListRequest struct {
+    Page  int     `json:"query:page"`
+    Limit int     `json:"query:limit"`
+    Score float64 `json:"query:score"`
+}
+
+// GET /items?page=2&limit=50&score=4.5
+// → Page: 2, Limit: 50, Score: 4.5
+
+// GET /items
+// → Page: 0, Limit: 0, Score: 0.0 (zero values)
+```
+
+### Booleans
+
+```go
+type FilterRequest struct {
+    Active bool `json:"query:active"`
+}
+
+// GET /items?active=true  → Active: true
+// GET /items?active=1     → Active: true
+// GET /items?active=false → Active: false
+// GET /items?active=0     → Active: false
+// GET /items              → Active: false (zero value)
+```
+
+### Pointers
+
+```go
+type SearchRequest struct {
+    Limit *int `json:"query:limit"`
+}
+
+// GET /search?limit=10 → Limit: &10
+// GET /search          → Limit: nil (can distinguish missing vs zero)
+```
+
+### All types
+
+```go
+type ComplexRequest struct {
+    UserID   int64   `json:"path:id"`
+    APIKey   string  `json:"header:X-API-Key"`
+    Page     int     `json:"query:page"`
+    PageSize *int    `json:"query:page_size"`
+    Active   bool    `json:"query:active"`
+    Score    float64 `json:"query:min_score"`
+}
+```
+
+## Not yet supported
+
+<Warning>
+  The following types are not yet supported but are on the roadmap:
+</Warning>
+
+- **Slices** (e.g., `?tag=a&tag=b` → `[]string{"a", "b"}`)
+- **Maps**
+- **Custom types** implementing `encoding.TextUnmarshaler`
+- **Time parsing** (`time.Time`)
+- **Duration parsing** (`time.Duration`)
+- **URL parsing** (`*url.URL`)
+
+For these types, use `string` fields and parse manually in your handler:
+
+```go
+type Request struct {
+    CreatedAt string `json:"query:created_at"`
+}
+
+func Handler(req Request) error {
+    t, err := time.Parse(time.RFC3339, req.CreatedAt)
+    if err != nil {
+        return err
+    }
+    // Use t...
+}
+```

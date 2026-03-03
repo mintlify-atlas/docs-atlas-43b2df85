@@ -1,0 +1,228 @@
+---
+title: Error handling
+description: Error handling patterns and best practices for go-fast handlers
+---
+
+go-fast provides automatic error handling while giving you full control when needed.
+
+## Return errors from handlers
+
+Handlers can return errors as the second return value:
+
+```go
+func CreateUser(req struct {
+    Body CreateUserRequest `json:"body"`
+}) (*UserResponse, error) {
+    if req.Body.Email == "" {
+        return nil, errors.New("email is required")
+    }
+
+    user, err := db.CreateUser(req.Body)
+    if err != nil {
+        return nil, err
+    }
+
+    return &UserResponse{ID: user.ID}, nil
+}
+```
+
+## Default error handling
+
+By default, go-fast returns a 500 status code with a JSON error response:
+
+```json
+{
+  "error": "email is required"
+}
+```
+
+## Validation errors
+
+go-fast automatically handles validation errors for:
+
+- **Missing required fields** — Path params, headers, and cookies return 400 if missing
+- **Type conversion failures** — Invalid int, bool, or float values return 400
+- **JSON decode errors** — Malformed JSON body returns 400
+- **File upload errors** — Missing files return 400
+
+### Type conversion example
+
+```go
+func GetUser(req struct {
+    ID int `json:"path:id"`
+}) (*UserResponse, error) {
+    // ...
+}
+```
+
+If the client sends `/users/abc`, go-fast automatically returns:
+```json
+{
+  "error": "path variable 'id': strconv.Atoi: parsing \"abc\": invalid syntax"
+}
+```
+
+## Custom error types
+
+For custom error handling, you can define your own error types:
+
+```go
+type ValidationError struct {
+    Field   string `json:"field"`
+    Message string `json:"message"`
+}
+
+func (e ValidationError) Error() string {
+    return fmt.Sprintf("%s: %s", e.Field, e.Message)
+}
+
+func CreateUser(req struct {
+    Body CreateUserRequest `json:"body"`
+}) (*UserResponse, error) {
+    if !isValidEmail(req.Body.Email) {
+        return nil, ValidationError{
+            Field:   "email",
+            Message: "invalid email format",
+        }
+    }
+
+    // ...
+}
+```
+
+The error will be serialized to JSON:
+```json
+{
+  "error": "email: invalid email format"
+}
+```
+
+## Multiple validation errors
+
+Collect multiple validation errors before returning:
+
+```go
+type ValidationErrors []ValidationError
+
+func (e ValidationErrors) Error() string {
+    var msgs []string
+    for _, err := range e {
+        msgs = append(msgs, err.Error())
+    }
+    return strings.Join(msgs, "; ")
+}
+
+func CreateUser(req struct {
+    Body CreateUserRequest `json:"body"`
+}) (*UserResponse, error) {
+    var errs ValidationErrors
+
+    if req.Body.Name == "" {
+        errs = append(errs, ValidationError{"name", "required"})
+    }
+    if !isValidEmail(req.Body.Email) {
+        errs = append(errs, ValidationError{"email", "invalid format"})
+    }
+
+    if len(errs) > 0 {
+        return nil, errs
+    }
+
+    // ...
+}
+```
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Return domain errors, not HTTP errors">
+    Let go-fast handle HTTP concerns. Your handlers should return business logic errors:
+
+    ```go
+    // Good
+    return nil, errors.New("user not found")
+
+    // Avoid
+    w.WriteHeader(404)
+    ```
+  </Accordion>
+
+  <Accordion title="Use custom error types for structured errors">
+    Define error types that can be serialized to JSON:
+
+    ```go
+    type NotFoundError struct {
+        Resource string `json:"resource"`
+        ID       string `json:"id"`
+    }
+
+    func (e NotFoundError) Error() string {
+        return fmt.Sprintf("%s %s not found", e.Resource, e.ID)
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Validate early">
+    Validate input at the top of your handler before expensive operations:
+
+    ```go
+    func CreateOrder(req struct {
+        Body OrderBody `json:"body"`
+    }) (*OrderResponse, error) {
+        // Validate first
+        if req.Body.Quantity <= 0 {
+            return nil, errors.New("quantity must be positive")
+        }
+
+        // Then do expensive work
+        result, err := processPayment(req.Body)
+        // ...
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Wrap errors with context">
+    Use `fmt.Errorf` with `%w` to wrap errors:
+
+    ```go
+    user, err := db.CreateUser(req.Body)
+    if err != nil {
+        return nil, fmt.Errorf("create user: %w", err)
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Testing error scenarios
+
+Test error handling by calling handlers directly:
+
+```go
+func TestCreateUser_InvalidEmail(t *testing.T) {
+    _, err := CreateUser(struct {
+        Body CreateUserRequest `json:"body"`
+    }{
+        Body: CreateUserRequest{
+            Name:  "John",
+            Email: "invalid",
+        },
+    })
+
+    if err == nil {
+        t.Fatal("expected error for invalid email")
+    }
+
+    var valErr ValidationError
+    if !errors.As(err, &valErr) {
+        t.Fatalf("expected ValidationError, got %T", err)
+    }
+
+    if valErr.Field != "email" {
+        t.Errorf("field = %q, want %q", valErr.Field, "email")
+    }
+}
+```
+
+<Note>
+  Future versions of go-fast may support custom error handlers and status code mapping.
+</Note>

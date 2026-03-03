@@ -1,0 +1,127 @@
+---
+title: Context
+description: Request-scoped context for field resolvers
+---
+
+The `Context` type carries request-scoped values used by field resolvers during request parsing.
+
+## Definition
+
+```go
+type Context struct {
+    Request *http.Request
+    Params  map[string]string
+}
+```
+
+<ResponseField name="Request" type="*http.Request" required>
+  The incoming HTTP request being processed. Used by all resolvers to extract values from headers, query parameters, cookies, body, and form data.
+</ResponseField>
+
+<ResponseField name="Params" type="map[string]string">
+  Path variables extracted by the router. Populated by router integrations for path parameter resolution.
+  
+  When no router integration is present, this map may be empty.
+</ResponseField>
+
+## Usage
+
+The `Context` is created automatically by the adapted handler and passed to each field resolver during request processing. You typically don't create or manipulate `Context` instances directly.
+
+```go
+ctx := &Context{
+    Request: r,
+    Params:  map[string]string{
+        "id": "123",
+        "slug": "my-article",
+    },
+}
+```
+
+## Router integration
+
+To enable path variable resolution, your router must populate `Context.Params` with extracted path parameters.
+
+### Example with Chi router
+
+```go
+package main
+
+import (
+    "net/http"
+    "github.com/go-chi/chi/v5"
+    "github.com/sohamratnaparkhi/go-fast/pkg/handler"
+)
+
+type GetArticleRequest struct {
+    ID int `json:"path:id"`
+}
+
+func GetArticle(req GetArticleRequest) (Article, error) {
+    // req.ID is automatically parsed from path
+    return fetchArticle(req.ID)
+}
+
+func main() {
+    r := chi.NewRouter()
+    
+    h, _ := handler.Adapt(GetArticle)
+    r.Get("/articles/{id}", h)
+    
+    http.ListenAndServe(":8080", r)
+}
+```
+
+### Custom router integration
+
+If you're using a custom router or a router that go-fast doesn't integrate with, you can manually populate the `Params` map:
+
+```go
+func withPathParams(next http.HandlerFunc, extractParams func(*http.Request) map[string]string) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // This approach won't work with the current architecture
+        // The Context is created inside the adapted handler
+        // You need router-specific integration
+        next.ServeHTTP(w, r)
+    }
+}
+```
+
+<Note>
+  The `Context` is an internal type created by the adapted handler. Path parameters must be provided through router integration (Chi, Gorilla Mux) rather than middleware.
+</Note>
+
+## Resolver access
+
+Each field resolver receives the `Context` and uses it to extract values:
+
+- **BodyResolver**: Reads `ctx.Request.Body` and decodes JSON
+- **HeaderResolver**: Reads `ctx.Request.Header.Get(name)`
+- **QueryResolver**: Reads `ctx.Request.URL.Query().Get(name)`
+- **PathVarResolver**: Reads `ctx.Params[name]` (requires router integration)
+- **CookieResolver**: Reads `ctx.Request.Cookie(name)`
+- **FormResolver**: Reads `ctx.Request.PostFormValue(name)`
+- **FileResolver**: Parses `ctx.Request.MultipartForm`
+
+## Thread safety
+
+A new `Context` instance is created for each HTTP request. Resolvers execute sequentially during request processing, so no synchronization is needed.
+
+## Extending context
+
+The `Context` type is intentionally minimal. If you need to pass additional request-scoped data (user authentication, request IDs, etc.), use Go's standard `context.Context` mechanism:
+
+```go
+type AuthenticatedRequest struct {
+    Token string `json:"header:Authorization"`
+    Body  CreateUserData `json:"body"`
+}
+
+func CreateUser(req AuthenticatedRequest) (User, error) {
+    // Validate token and extract user info
+    user := validateToken(req.Token)
+    
+    // Use the authenticated user
+    return createUser(user, req.Body)
+}
+```

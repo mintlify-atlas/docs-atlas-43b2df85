@@ -1,0 +1,391 @@
+---
+title: Examples
+description: Real-world code examples from the go-fast examples directory
+---
+
+Explore real-world examples that demonstrate go-fast's resolver system.
+
+## Create user
+
+Handle JSON body with header authentication.
+
+<CodeGroup>
+```go go-fast
+type CreateUserRequest struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+type UserResponse struct {
+    ID    string `json:"id"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+func CreateUser(req struct {
+    Body  CreateUserRequest `json:"body"`
+    Token string            `json:"header:Authorization"`
+}) (*UserResponse, error) {
+    return &UserResponse{
+        ID:    "user_123",
+        Name:  req.Body.Name,
+        Email: req.Body.Email,
+    }, nil
+}
+
+h, _ := handler.Adapt(CreateUser)
+http.HandleFunc("/users", h)
+```
+
+```go Gin
+r.POST("/users", func(c *gin.Context) {
+    token := c.GetHeader("Authorization")
+
+    var req CreateUserRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    c.JSON(http.StatusOK, UserResponse{
+        ID:    "user_123",
+        Name:  req.Name,
+        Email: req.Email,
+    })
+})
+```
+
+```go Fiber
+app.Post("/users", func(c *fiber.Ctx) error {
+    token := c.Get("Authorization")
+
+    var req CreateUserRequest
+    if err := c.BodyParser(&req); err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+    }
+
+    return c.JSON(UserResponse{
+        ID:    "user_123",
+        Name:  req.Name,
+        Email: req.Email,
+    })
+})
+```
+</CodeGroup>
+
+## Query search
+
+Extract and convert query parameters automatically.
+
+<CodeGroup>
+```go go-fast
+type SearchResult struct {
+    Query  string `json:"query"`
+    Page   int    `json:"page"`
+    Active bool   `json:"active"`
+}
+
+func SearchUsers(req struct {
+    Query  string `json:"query:q"`
+    Page   int    `json:"query:page"`
+    Active bool   `json:"query:active"`
+}) (*SearchResult, error) {
+    return &SearchResult{
+        Query:  req.Query,
+        Page:   req.Page,
+        Active: req.Active,
+    }, nil
+}
+
+h, _ := handler.Adapt(SearchUsers)
+http.HandleFunc("/search", h)
+```
+
+```go Gin
+r.GET("/search", func(c *gin.Context) {
+    q := c.Query("q")
+    pageStr := c.DefaultQuery("page", "0")
+    activeStr := c.DefaultQuery("active", "false")
+
+    page, err := strconv.Atoi(pageStr)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid page"})
+        return
+    }
+
+    active, err := strconv.ParseBool(activeStr)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid active"})
+        return
+    }
+
+    c.JSON(http.StatusOK, SearchResult{
+        Query:  q,
+        Page:   page,
+        Active: active,
+    })
+})
+```
+
+```go Fiber
+app.Get("/search", func(c *fiber.Ctx) error {
+    q := c.Query("q")
+    pageStr := c.Query("page", "0")
+    activeStr := c.Query("active", "false")
+
+    page, err := strconv.Atoi(pageStr)
+    if err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid page"})
+    }
+
+    active, err := strconv.ParseBool(activeStr)
+    if err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid active"})
+    }
+
+    return c.JSON(SearchResult{
+        Query:  q,
+        Page:   page,
+        Active: active,
+    })
+})
+```
+</CodeGroup>
+
+## Get user
+
+Extract path variables with automatic type conversion.
+
+<CodeGroup>
+```go go-fast
+type UserResponse struct {
+    ID   int    `json:"id"`
+    Name string `json:"name"`
+}
+
+func GetUser(req struct {
+    ID int `json:"path:id"`
+}) (*UserResponse, error) {
+    return &UserResponse{
+        ID:   req.ID,
+        Name: fmt.Sprintf("User #%d", req.ID),
+    }, nil
+}
+
+h, _ := handler.Adapt(GetUser)
+// Wire with your router that populates ctx.Params
+```
+
+```go Gin
+r.GET("/users/:id", func(c *gin.Context) {
+    idStr := c.Param("id")
+    id, err := strconv.Atoi(idStr)
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+        return
+    }
+
+    c.JSON(http.StatusOK, UserResponse{
+        ID:   id,
+        Name: fmt.Sprintf("User #%d", id),
+    })
+})
+```
+
+```go Fiber
+app.Get("/users/:id", func(c *fiber.Ctx) error {
+    idStr := c.Params("id")
+    id, err := strconv.Atoi(idStr)
+    if err != nil {
+        return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid id"})
+    }
+
+    return c.JSON(UserResponse{
+        ID:   id,
+        Name: fmt.Sprintf("User #%d", id),
+    })
+})
+```
+</CodeGroup>
+
+## Cookie session
+
+Read cookies without error handling boilerplate.
+
+<CodeGroup>
+```go go-fast
+type ProfileResponse struct {
+    Session string `json:"session"`
+    Theme   string `json:"theme"`
+}
+
+func GetProfile(req struct {
+    Session string `json:"cookie:session_id"`
+    Theme   string `json:"cookie:theme"`
+}) (*ProfileResponse, error) {
+    return &ProfileResponse{
+        Session: req.Session,
+        Theme:   req.Theme,
+    }, nil
+}
+
+h, _ := handler.Adapt(GetProfile)
+http.HandleFunc("/profile", h)
+```
+
+```go Gin
+r.GET("/profile", func(c *gin.Context) {
+    session, err := c.Cookie("session_id")
+    if err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "missing session_id cookie"})
+        return
+    }
+
+    theme, err := c.Cookie("theme")
+    if err != nil {
+        theme = ""
+    }
+
+    c.JSON(http.StatusOK, ProfileResponse{
+        Session: session,
+        Theme:   theme,
+    })
+})
+```
+
+```go Fiber
+app.Get("/profile", func(c *fiber.Ctx) error {
+    session := c.Cookies("session_id")
+    theme := c.Cookies("theme")
+
+    return c.JSON(ProfileResponse{
+        Session: session,
+        Theme:   theme,
+    })
+})
+```
+</CodeGroup>
+
+## Form submit
+
+Handle URL-encoded or multipart form submissions.
+
+```go
+type ContactResponse struct {
+    Name    string `json:"name"`
+    Email   string `json:"email"`
+    Message string `json:"message"`
+}
+
+func SubmitContact(req struct {
+    Name    string `json:"form:name"`
+    Email   string `json:"form:email"`
+    Message string `json:"form:message"`
+}) (*ContactResponse, error) {
+    return &ContactResponse{
+        Name:    req.Name,
+        Email:   req.Email,
+        Message: req.Message,
+    }, nil
+}
+
+h, _ := handler.Adapt(SubmitContact)
+http.HandleFunc("/contact", h)
+```
+
+Test with:
+```bash
+curl -X POST localhost:8080/contact \
+  -d 'name=Alice&email=alice@example.com&message=Hello!'
+```
+
+## File upload
+
+Handle multipart file uploads with form fields.
+
+```go
+type UploadResponse struct {
+    Title    string `json:"title"`
+    Filename string `json:"filename"`
+    Size     int64  `json:"size"`
+}
+
+func UploadDocument(req struct {
+    Title    string                `json:"form:title"`
+    Document *multipart.FileHeader `json:"file:document"`
+}) (*UploadResponse, error) {
+    return &UploadResponse{
+        Title:    req.Title,
+        Filename: req.Document.Filename,
+        Size:     req.Document.Size,
+    }, nil
+}
+
+h, _ := handler.Adapt(UploadDocument)
+http.HandleFunc("/upload", h)
+```
+
+Test with:
+```bash
+curl -X POST localhost:8080/upload \
+  -F 'title=My Report' \
+  -F 'document=@report.pdf'
+```
+
+<Note>
+  File fields must be `*multipart.FileHeader` type. This is validated at startup.
+</Note>
+
+## Kitchen sink
+
+Combine all five resolver types in a single handler.
+
+```go
+type OrderBody struct {
+    Item     string  `json:"item"`
+    Quantity int     `json:"quantity"`
+    Price    float64 `json:"price"`
+}
+
+type OrderResponse struct {
+    UserID    int     `json:"user_id"`
+    Item      string  `json:"item"`
+    Quantity  int     `json:"quantity"`
+    Price     float64 `json:"price"`
+    Currency  string  `json:"currency"`
+    Token     string  `json:"token"`
+    SessionID string  `json:"session_id"`
+}
+
+func CreateOrder(req struct {
+    Body     OrderBody `json:"body"`
+    UserID   int       `json:"path:user_id"`
+    Currency string    `json:"query:currency"`
+    Token    string    `json:"header:Authorization"`
+    Session  string    `json:"cookie:sid"`
+}) (*OrderResponse, error) {
+    return &OrderResponse{
+        UserID:    req.UserID,
+        Item:      req.Body.Item,
+        Quantity:  req.Body.Quantity,
+        Price:     req.Body.Price,
+        Currency:  req.Currency,
+        Token:     req.Token,
+        SessionID: req.Session,
+    }, nil
+}
+
+h, _ := handler.Adapt(CreateOrder)
+```
+
+Test with:
+```bash
+curl -X POST 'localhost:8080/orders/42?currency=USD' \
+  -H 'Authorization: Bearer tok' \
+  -b 'sid=sess-abc' \
+  -d '{"item":"widget","quantity":3,"price":9.99}'
+```
+
+<Tip>
+  All examples are available in the [examples directory](https://github.com/sohamratnaparkhi/go-fast/tree/main/examples) with side-by-side comparisons to Gin and Fiber.
+</Tip>

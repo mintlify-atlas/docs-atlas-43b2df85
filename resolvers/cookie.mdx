@@ -1,0 +1,247 @@
+---
+title: Cookie resolver
+description: Extract values from HTTP cookies
+---
+
+The cookie resolver extracts a value from an HTTP cookie.
+
+## Tag syntax
+
+```go
+json:"cookie:<cookie-name>"
+```
+
+<ParamField path="cookie-name" type="string" required>
+  The name of the cookie to extract
+</ParamField>
+
+## Supported types
+
+- `string`
+- `bool`
+- `int`, `int8`, `int16`, `int32`, `int64`
+- `uint`, `uint8`, `uint16`, `uint32`, `uint64`
+- `float32`, `float64`
+- Pointers to any of the above types
+
+## Basic example
+
+```go
+func GetProfile(req struct {
+    Session string `json:"cookie:session_id"`
+    Theme   string `json:"cookie:theme"`
+}) (*ProfileResponse, error) {
+    return &ProfileResponse{
+        Session: req.Session,
+        Theme:   req.Theme,
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+curl localhost:8080/profile \
+  -b 'session_id=abc123;theme=dark'
+
+# Response:
+{
+  "session": "abc123",
+  "theme": "dark"
+}
+```
+
+## Type conversion
+
+Cookie values are automatically converted from strings to your declared type:
+
+```go
+func GetPreferences(req struct {
+    UserID      int    `json:"cookie:user_id"`
+    DarkMode    bool   `json:"cookie:dark_mode"`
+    FontSize    int    `json:"cookie:font_size"`
+}) (*Preferences, error) {
+    // Cookies: user_id=42; dark_mode=true; font_size=14
+    // req.UserID   = 42
+    // req.DarkMode = true
+    // req.FontSize = 14
+}
+```
+
+## Authentication example
+
+```go
+func ProtectedHandler(req struct {
+    SessionID string `json:"cookie:session_id"`
+    CSRF      string `json:"header:X-CSRF-Token"`
+}) (*Response, error) {
+    // Validate session and CSRF token
+    session := validateSession(req.SessionID)
+    if session == nil {
+        return nil, fmt.Errorf("invalid session")
+    }
+    
+    if req.CSRF != session.CSRFToken {
+        return nil, fmt.Errorf("invalid CSRF token")
+    }
+    
+    // Process authenticated request
+}
+```
+
+## Behavior
+
+<ParamField path="Implementation" type="Details">
+  Reads via `request.Cookie(name)`
+</ParamField>
+
+<ParamField path="Missing cookies" type="Error">
+  Returns 400 Bad Request if the cookie is missing (unlike header/query which return zero values)
+</ParamField>
+
+<ParamField path="Type conversion" type="Automatic">
+  Uses `strconv` package for conversion. Returns 400 if conversion fails (e.g., `"abc"` to `int`)
+</ParamField>
+
+<ParamField path="Cookie attributes" type="Note">
+  Only the cookie value is extracted. Attributes like `Path`, `Domain`, `Secure`, `HttpOnly`, and `Expires` are not accessible through the resolver.
+</ParamField>
+
+## Optional cookies with pointers
+
+To make a cookie optional, use a pointer type:
+
+```go
+func Handler(req struct {
+    Session  string  `json:"cookie:session_id"`  // Required
+    Language *string `json:"cookie:language"`    // Optional
+}) (*Response, error) {
+    lang := "en" // default
+    if req.Language != nil {
+        lang = *req.Language
+    }
+    // Use lang...
+}
+```
+
+**Note:** With pointer types, the cookie being missing vs. having an empty value both result in `nil`.
+
+## Common use cases
+
+**Session management:**
+```go
+func GetDashboard(req struct {
+    SessionID string `json:"cookie:session_id"`
+}) (*Dashboard, error) {
+    session := sessions.Get(req.SessionID)
+    if session == nil || session.IsExpired() {
+        return nil, fmt.Errorf("session expired")
+    }
+    return buildDashboard(session.UserID), nil
+}
+```
+
+**User preferences:**
+```go
+func GetHomepage(req struct {
+    Theme    string `json:"cookie:theme"`
+    Language string `json:"cookie:lang"`
+    Timezone string `json:"cookie:tz"`
+}) (*Homepage, error) {
+    return renderHomepage(req.Theme, req.Language, req.Timezone), nil
+}
+```
+
+**Analytics tracking:**
+```go
+func TrackEvent(req struct {
+    UserID      string `json:"cookie:user_id"`
+    TrackingID  string `json:"cookie:_ga"`      // Google Analytics
+    ABTestGroup int    `json:"cookie:ab_group"` // A/B test variant
+}) error {
+    analytics.Track(req.UserID, req.TrackingID, req.ABTestGroup)
+    return nil
+}
+```
+
+## Comparison with other frameworks
+
+| Framework | Code |
+|-----------|------|
+| **go-fast** | `Session string \`json:"cookie:session_id"\`` |
+| Gin | `session, err := c.Cookie("session_id"); if err != nil { ... }` |
+| Fiber | `session := c.Cookies("session_id")` |
+| net/http | `cookie, err := r.Cookie("session_id"); if err != nil { ... }; session := cookie.Value` |
+
+## Edge cases
+
+**Missing cookie:**
+```bash
+curl localhost:8080/api
+# Response: 400 Bad Request
+{"error": "resolve cookie \"session_id\": http: named cookie not present"}
+```
+
+**Invalid type conversion:**
+```bash
+curl localhost:8080/api -b 'user_id=abc'
+# For int field:
+# Response: 400 Bad Request
+{"error": "resolve cookie \"user_id\": strconv.ParseInt: parsing \"abc\": invalid syntax"}
+```
+
+**URL encoding:**
+Cookie values are automatically URL-decoded:
+```bash
+curl localhost:8080/api -b 'name=John%20Doe'
+# req.Name = "John Doe"
+```
+
+**Empty cookie value:**
+```bash
+curl localhost:8080/api -b 'theme='
+# For string field: req.Theme = ""
+# For int field: req.Count = 0 (converted from empty string)
+```
+
+## Security considerations
+
+**Never trust cookie data:**
+Cookies can be modified by the client. Always validate and sanitize cookie values:
+
+```go
+func Handler(req struct {
+    SessionID string `json:"cookie:session_id"`
+}) (*Response, error) {
+    // Validate session ID format
+    if !isValidSessionID(req.SessionID) {
+        return nil, fmt.Errorf("invalid session ID")
+    }
+    
+    // Look up session in database/cache
+    session := db.FindSession(req.SessionID)
+    if session == nil {
+        return nil, fmt.Errorf("session not found")
+    }
+    
+    // Check expiration
+    if session.ExpiresAt.Before(time.Now()) {
+        return nil, fmt.Errorf("session expired")
+    }
+    
+    // Use validated session
+}
+```
+
+**Use HttpOnly and Secure flags:**
+When setting cookies in your response, use `HttpOnly` and `Secure` flags to protect against XSS and man-in-the-middle attacks:
+
+```go
+http.SetCookie(w, &http.Cookie{
+    Name:     "session_id",
+    Value:    sessionID,
+    HttpOnly: true,  // Prevent JavaScript access
+    Secure:   true,  // HTTPS only
+    SameSite: http.SameSiteStrictMode,
+    Path:     "/",
+})
+```

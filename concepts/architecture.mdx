@@ -1,0 +1,206 @@
+---
+title: System architecture
+description: Understanding go-fast's two-phase handler system with analyzer, metadata, resolvers, and adapter
+---
+
+## Overview
+
+go-fast's handler system has four layers that execute in two distinct phases: startup and runtime.
+
+```
+STARTUP (once per handler)              RUNTIME (per request)
+┌──────────┐   ┌──────────────┐        ┌─────────────────────┐
+│ Analyzer │──▶│ Resolver     │──▶     │ Adapter Closure     │
+│          │   │ Builder      │        │                     │
+│ Inspect  │   │ Read tags,   │        │ 1. New struct       │
+│ function │   │ create typed │        │ 2. Resolve fields   │
+│ via      │   │ resolvers    │        │ 3. Call function    │
+│ reflect  │   │              │        │ 4. Write response   │
+└──────────┘   └──────────────┘        └─────────────────────┘
+```
+
+<Info>
+  The key design principle is **do expensive work once at startup**, not on every request. Reflection analysis happens once, then the adapter closure uses precomputed metadata and resolvers.
+</Info>
+
+## Components
+
+### Analyzer
+
+**Location:** `pkg/handler/analyzer.go`
+
+**Input:** Any `interface{}`  
+**Output:** `*HandlerMetadata`
+
+The analyzer uses Go's `reflect` package to extract function metadata:
+
+- `FuncValue` / `FuncType` — the callable and its type
+- `NumInputs` / `InputTypes` — parameter count and types
+- `NumOutputs` / `OutputTypes` — return value count and types
+- `ReturnsError` — whether the last return implements `error`
+
+Called once at startup. The metadata is captured in the adapter closure.
+
+```go pkg/handler/analyzer.go
+func Analyze(fn interface{}) (*HandlerMetadata, error) {
+    fnType := reflect.TypeOf(fn)
+    if fnType == nil || fnType.Kind() != reflect.Func {
+        return nil, errors.New("fn is not a function")
+    }
+
+    funcValue := reflect.ValueOf(fn)
+    funcType := funcValue.Type()
+
+    numInputs := funcType.NumIn()
+    numOutputs := funcType.NumOut()
+    
+    // Extract input and output types...
+    returnsError := false
+    if numOutputs > 0 && outputTypes[numOutputs-1].Implements(errorInterface) {
+        returnsError = true
+    }
+    
+    return &HandlerMetadata{...}, nil
+}
+```
+
+### Metadata
+
+**Location:** `pkg/handler/metadata.go`
+
+A plain struct holding pre-computed function metadata. No methods, no logic — just data.
+
+```go
+type HandlerMetadata struct {
+    FuncValue    reflect.Value
+    FuncType     reflect.Type
+    NumInputs    int
+    NumOutputs   int
+    InputTypes   []reflect.Type
+    OutputTypes  []reflect.Type
+    ReturnsError bool
+}
+```
+
+### Resolvers
+
+**Location:** `pkg/handler/resolvers/`
+
+Each resolver implements:
+
+```go
+type FieldResolver interface {
+    Resolve(ctx *Context) (reflect.Value, error)
+    FieldIndex() int
+}
+```
+
+Seven concrete implementations:
+
+| Resolver | Source | Key feature |
+|----------|--------|-------------|
+| `BodyResolver` | `request.Body` | JSON decode into struct/pointer |
+| `HeaderResolver` | `request.Header` | String + type conversion |
+| `QueryResolver` | `request.URL.Query()` | String + type conversion |
+| `PathVarResolver` | `ctx.Params` map | String + type conversion |
+| `CookieResolver` | `request.Cookie()` | String + type conversion |
+| `FormResolver` | `request.PostFormValue()` | String + type conversion |
+| `FileResolver` | `request.MultipartForm.File` | `*multipart.FileHeader` |
+
+<Note>
+  The five string-based resolvers (header, query, path, cookie, form) share `convertStringToType()` for automatic type conversion. The body resolver uses JSON decoding. The file resolver returns `*multipart.FileHeader` directly.
+</Note>
+
+### Context
+
+**Location:** `pkg/handler/context.go`
+
+```go
+type Context struct {
+    Request  *http.Request
+    Response http.ResponseWriter
+    Params   map[string]string
+}
+```
+
+Minimal wrapper around the HTTP request. `Params` is populated by the router (or the adapter with an empty map as default).
+
+### Adapter
+
+**Location:** `pkg/handler/adapter.go`
+
+The adapter is the orchestrator. `Adapt(fn)` does the following:
+
+<Steps>
+  <Step title="Analyze the function">
+    Calls `Analyze(fn)` to extract metadata using reflection.
+  </Step>
+  
+  <Step title="Validate signature">
+    Ensures the function has exactly one input parameter and that it's a struct.
+  </Step>
+  
+  <Step title="Build resolvers">
+    Calls `buildResolvers(inputType)` which reads struct tags and creates a typed resolver for each field.
+  </Step>
+  
+  <Step title="Return closure">
+    Returns a standard `http.HandlerFunc` closure that uses the pre-built metadata and resolvers.
+  </Step>
+</Steps>
+
+The closure has **zero startup-time reflection** — all expensive analysis is done once during `Adapt()`.
+
+## Data flow
+
+```
+HTTP Request
+    │
+    ▼
+Adapter Closure
+    │
+    ├── reflect.New(inputType)     → zero-value struct
+    │
+    ├── BodyResolver.Resolve()     → populate body field (JSON)
+    ├── HeaderResolver.Resolve()   → populate header field
+    ├── QueryResolver.Resolve()    → populate query field
+    ├── PathVarResolver.Resolve()  → populate path field
+    ├── CookieResolver.Resolve()   → populate cookie field
+    ├── FormResolver.Resolve()     → populate form field
+    ├── FileResolver.Resolve()     → populate file field (multipart)
+    │
+    ├── meta.FuncValue.Call()      → invoke handler
+    │
+    ├── Check error return         → 500 if error
+    └── json.Encode(result)        → 200 JSON response
+```
+
+<Warning>
+  The body resolver **must run first** because it consumes `request.Body`, which is a one-time readable stream. Other resolvers don't consume the body.
+</Warning>
+
+## Design decisions
+
+### Struct tags over conventions
+
+Explicit is better than implicit. `json:"header:Authorization"` is unambiguous and self-documenting.
+
+### One struct input
+
+Forces grouping of all inputs. Makes the handler signature self-documenting and enables comprehensive startup validation.
+
+### Startup validation
+
+`Adapt()` returns errors for invalid signatures. No runtime surprises — bad handlers are caught at server startup.
+
+### Body resolved first
+
+Body consumes `request.Body` (a reader), so it must run before anything else that might need it.
+
+### Standard `http.HandlerFunc`
+
+The output of `Adapt()` is a standard Go `http.HandlerFunc`, which means it works with any Go HTTP router or middleware ecosystem.
+
+### Body vs form/file exclusivity
+
+JSON body and form/file resolvers both consume the request body through different parsers (JSON decoder vs multipart parser). `Adapt()` rejects structs that mix them to prevent runtime conflicts.

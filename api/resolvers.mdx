@@ -1,0 +1,389 @@
+---
+title: Resolvers
+description: Field resolver interfaces and implementations
+---
+
+Resolvers extract values from HTTP requests and populate struct fields. Each resolver implements the `FieldResolver` interface and handles a specific source (body, headers, query parameters, etc.).
+
+## Interfaces
+
+### FieldIndexProvider
+
+Exposes the target field index in the input struct.
+
+```go
+type FieldIndexProvider interface {
+    FieldIndex() int
+}
+```
+
+### FieldValueResolver
+
+Resolves a value for a tagged field from request context.
+
+```go
+type FieldValueResolver interface {
+    Resolve(ctx *Context) (reflect.Value, error)
+}
+```
+
+### FieldResolver
+
+Combines index and value resolution. All concrete resolvers implement this interface.
+
+```go
+type FieldResolver interface {
+    FieldIndexProvider
+    FieldValueResolver
+}
+```
+
+## BodyResolver
+
+Decodes request JSON body into a struct-typed field.
+
+```go
+type BodyResolver struct {
+    // private fields
+}
+
+func NewBodyResolver(fieldIdx int, fieldType reflect.Type) *BodyResolver
+```
+
+<ParamField path="fieldIdx" type="int" required>
+  The index of the field in the input struct.
+</ParamField>
+
+<ParamField path="fieldType" type="reflect.Type" required>
+  The reflected type of the field. Can be a struct or a pointer to a struct.
+</ParamField>
+
+### Behavior
+
+- Reads from `ctx.Request.Body`
+- Decodes JSON using `json.NewDecoder`
+- Supports both value and pointer field types
+- Returns error if JSON is malformed or context is nil
+
+### Example
+
+```go
+type CreateUserRequest struct {
+    Data UserData `json:"body"`
+}
+
+type UserData struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+// Request body:
+// {"name": "Alice", "email": "alice@example.com"}
+
+func CreateUser(req CreateUserRequest) error {
+    fmt.Println(req.Data.Name)  // "Alice"
+    fmt.Println(req.Data.Email) // "alice@example.com"
+    return nil
+}
+```
+
+## HeaderResolver
+
+Resolves a request header into the destination field type.
+
+```go
+type HeaderResolver struct {
+    // private fields
+}
+
+func NewHeaderResolver(fieldIdx int, headerName string, fieldType reflect.Type) *HeaderResolver
+```
+
+<ParamField path="fieldIdx" type="int" required>
+  The index of the field in the input struct.
+</ParamField>
+
+<ParamField path="headerName" type="string" required>
+  The HTTP header name to extract (case-insensitive).
+</ParamField>
+
+<ParamField path="fieldType" type="reflect.Type" required>
+  The reflected type of the field (string, int, bool, etc.).
+</ParamField>
+
+### Behavior
+
+- Reads from `ctx.Request.Header.Get(headerName)`
+- Converts string value to target field type
+- Supports string, int, int64, float64, bool types
+- Returns error if header is missing or conversion fails
+
+### Example
+
+```go
+type AuthRequest struct {
+    Token     string `json:"header:Authorization"`
+    UserAgent string `json:"header:User-Agent"`
+}
+
+func Handler(req AuthRequest) error {
+    fmt.Println(req.Token)     // "Bearer abc123"
+    fmt.Println(req.UserAgent) // "Mozilla/5.0..."
+    return nil
+}
+```
+
+## QueryResolver
+
+Resolves a query string value into the destination field type.
+
+```go
+type QueryResolver struct {
+    // private fields
+}
+
+func NewQueryResolver(fieldIdx int, queryName string, fieldType reflect.Type) *QueryResolver
+```
+
+<ParamField path="fieldIdx" type="int" required>
+  The index of the field in the input struct.
+</ParamField>
+
+<ParamField path="queryName" type="string" required>
+  The query parameter name to extract.
+</ParamField>
+
+<ParamField path="fieldType" type="reflect.Type" required>
+  The reflected type of the field (string, int, bool, etc.).
+</ParamField>
+
+### Behavior
+
+- Reads from `ctx.Request.URL.Query().Get(queryName)`
+- Converts string value to target field type
+- Supports string, int, int64, float64, bool types
+- Returns error if conversion fails
+
+### Example
+
+```go
+type SearchRequest struct {
+    Query string `json:"query:q"`
+    Limit int    `json:"query:limit"`
+    Debug bool   `json:"query:debug"`
+}
+
+// GET /search?q=golang&limit=10&debug=true
+
+func Search(req SearchRequest) ([]Result, error) {
+    fmt.Println(req.Query) // "golang"
+    fmt.Println(req.Limit) // 10
+    fmt.Println(req.Debug) // true
+    return search(req.Query, req.Limit)
+}
+```
+
+## PathVarResolver
+
+Resolves a path parameter into the destination field type.
+
+```go
+type PathVarResolver struct {
+    // private fields
+}
+
+func NewPathVarResolver(fieldIdx int, paramName string, fieldType reflect.Type) *PathVarResolver
+```
+
+<ParamField path="fieldIdx" type="int" required>
+  The index of the field in the input struct.
+</ParamField>
+
+<ParamField path="paramName" type="string" required>
+  The path parameter name to extract from `ctx.Params`.
+</ParamField>
+
+<ParamField path="fieldType" type="reflect.Type" required>
+  The reflected type of the field (string, int, etc.).
+</ParamField>
+
+### Behavior
+
+- Reads from `ctx.Params[paramName]`
+- Requires router integration to populate `ctx.Params`
+- Converts string value to target field type
+- Returns error if parameter not found or conversion fails
+
+### Example
+
+```go
+type GetUserRequest struct {
+    ID int `json:"path:id"`
+}
+
+// Route: /users/{id}
+// Request: GET /users/42
+
+func GetUser(req GetUserRequest) (User, error) {
+    fmt.Println(req.ID) // 42
+    return fetchUser(req.ID)
+}
+```
+
+## CookieResolver
+
+Resolves a cookie value into the destination field type.
+
+```go
+type CookieResolver struct {
+    // private fields
+}
+
+func NewCookieResolver(fieldIdx int, cookieName string, fieldType reflect.Type) *CookieResolver
+```
+
+<ParamField path="fieldIdx" type="int" required>
+  The index of the field in the input struct.
+</ParamField>
+
+<ParamField path="cookieName" type="string" required>
+  The cookie name to extract.
+</ParamField>
+
+<ParamField path="fieldType" type="reflect.Type" required>
+  The reflected type of the field (string, int, etc.).
+</ParamField>
+
+### Behavior
+
+- Reads from `ctx.Request.Cookie(cookieName)`
+- Converts cookie value to target field type
+- Returns error if cookie not found or conversion fails
+
+### Example
+
+```go
+type SessionRequest struct {
+    SessionID string `json:"cookie:session_id"`
+}
+
+func Handler(req SessionRequest) error {
+    fmt.Println(req.SessionID) // "abc123xyz"
+    return validateSession(req.SessionID)
+}
+```
+
+## FormResolver
+
+Resolves a form field value into the destination field type.
+
+```go
+type FormResolver struct {
+    // private fields
+}
+
+func NewFormResolver(fieldIdx int, formName string, fieldType reflect.Type) *FormResolver
+```
+
+<ParamField path="fieldIdx" type="int" required>
+  The index of the field in the input struct.
+</ParamField>
+
+<ParamField path="formName" type="string" required>
+  The form field name to extract.
+</ParamField>
+
+<ParamField path="fieldType" type="reflect.Type" required>
+  The reflected type of the field (string, int, etc.).
+</ParamField>
+
+### Behavior
+
+- Reads from `ctx.Request.PostFormValue(formName)`
+- Works with both `application/x-www-form-urlencoded` and `multipart/form-data`
+- Converts string value to target field type
+- Returns error if conversion fails
+
+### Example
+
+```go
+type LoginRequest struct {
+    Username string `json:"form:username"`
+    Password string `json:"form:password"`
+}
+
+// POST /login
+// Content-Type: application/x-www-form-urlencoded
+// Body: username=alice&password=secret123
+
+func Login(req LoginRequest) error {
+    fmt.Println(req.Username) // "alice"
+    fmt.Println(req.Password) // "secret123"
+    return authenticate(req.Username, req.Password)
+}
+```
+
+## FileResolver
+
+Resolves an uploaded file from a multipart/form-data request.
+
+```go
+type FileResolver struct {
+    // private fields
+}
+
+func NewFileResolver(fieldIdx int, fileName string) *FileResolver
+```
+
+<ParamField path="fieldIdx" type="int" required>
+  The index of the field in the input struct.
+</ParamField>
+
+<ParamField path="fileName" type="string" required>
+  The form field name containing the uploaded file.
+</ParamField>
+
+### Behavior
+
+- Field type must be `*multipart.FileHeader`
+- Parses multipart form with 32 MB memory limit
+- Returns first file if multiple files uploaded with same name
+- Returns error if form parsing fails or file not found
+
+### Example
+
+```go
+import "mime/multipart"
+
+type UploadRequest struct {
+    Avatar *multipart.FileHeader `json:"file:avatar"`
+    Name   string                 `json:"form:name"`
+}
+
+func Upload(req UploadRequest) error {
+    file, err := req.Avatar.Open()
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+    
+    fmt.Println("Filename:", req.Avatar.Filename)
+    fmt.Println("Size:", req.Avatar.Size)
+    fmt.Println("Name:", req.Name)
+    
+    // Save file...
+    return nil
+}
+```
+
+## Type conversion
+
+All string-based resolvers (Header, Query, PathVar, Cookie, Form) support automatic type conversion:
+
+- **string**: No conversion
+- **int**: Parsed using `strconv.Atoi`
+- **int64**: Parsed using `strconv.ParseInt`
+- **float64**: Parsed using `strconv.ParseFloat`
+- **bool**: Parsed using `strconv.ParseBool` (accepts "true", "false", "1", "0", "t", "f")
+
+Conversion errors return descriptive error messages indicating which field failed to parse.

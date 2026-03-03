@@ -1,0 +1,232 @@
+---
+title: Resolver system
+description: How resolvers extract typed values from HTTP requests
+---
+
+Resolvers are the bridge between HTTP request data (strings, JSON, files) and your Go struct fields. Each resolver knows how to extract a specific type of data from a specific location in the request.
+
+## Interface
+
+All resolvers implement this interface:
+
+```go pkg/handler/resolvers/resolver.go
+type FieldResolver interface {
+    Resolve(ctx *Context) (reflect.Value, error)
+    FieldIndex() int
+}
+```
+
+- `Resolve()` extracts and converts the value from the request
+- `FieldIndex()` returns which struct field this resolver populates
+
+<Info>
+  Resolvers are created once at startup and reused for every request. They're stateless and safe for concurrent use.
+</Info>
+
+## Built-in resolvers
+
+### BodyResolver
+
+**Tag:** `json:"body"`  
+**Source:** `request.Body`  
+**Returns:** Decoded JSON struct or pointer
+
+```go
+type CreateUserRequest struct {
+    Body *User `json:"body"`
+}
+```
+
+Decodes the entire request body as JSON into the field. Supports both value and pointer types.
+
+```go pkg/handler/resolvers/body.go
+func (r *BodyResolver) Resolve(ctx *Context) (reflect.Value, error) {
+    if r.fieldType.Kind() == reflect.Ptr {
+        instance := reflect.New(r.fieldType.Elem())
+        if err := json.NewDecoder(ctx.Request.Body).Decode(instance.Interface()); err != nil {
+            return reflect.Value{}, fmt.Errorf("decode body: %w", err)
+        }
+        return instance, nil
+    }
+
+    instance := reflect.New(r.fieldType)
+    if err := json.NewDecoder(ctx.Request.Body).Decode(instance.Interface()); err != nil {
+        return reflect.Value{}, fmt.Errorf("decode body: %w", err)
+    }
+
+    return instance.Elem(), nil
+}
+```
+
+<Warning>
+  Only one field can have `json:"body"`. The body resolver must run first because it consumes the request body stream.
+</Warning>
+
+### HeaderResolver
+
+**Tag:** `json:"header:<name>"`  
+**Source:** `request.Header.Get(name)`  
+**Returns:** Type-converted string value
+
+```go
+type GetUserRequest struct {
+    APIKey string `json:"header:X-API-Key"`
+    Limit  int    `json:"header:X-Rate-Limit"`
+}
+```
+
+```go pkg/handler/resolvers/header.go
+func (r *HeaderResolver) Resolve(ctx *Context) (reflect.Value, error) {
+    raw := ctx.Request.Header.Get(r.headerName)
+    value, err := convertStringToType(raw, r.fieldType)
+    if err != nil {
+        return reflect.Value{}, fmt.Errorf("resolve header %q: %w", r.headerName, err)
+    }
+    return value, nil
+}
+```
+
+Missing headers return the zero value of the field type.
+
+### QueryResolver
+
+**Tag:** `json:"query:<name>"`  
+**Source:** `request.URL.Query().Get(name)`  
+**Returns:** Type-converted query parameter
+
+```go
+type ListUsersRequest struct {
+    Page  int    `json:"query:page"`
+    Limit int    `json:"query:limit"`
+    Sort  string `json:"query:sort"`
+}
+```
+
+Missing query params return the zero value of the field type.
+
+### PathVarResolver
+
+**Tag:** `json:"path:<name>"`  
+**Source:** `ctx.Params[name]` (populated by router)  
+**Returns:** Type-converted path parameter
+
+```go
+type GetUserRequest struct {
+    UserID int `json:"path:id"`
+}
+```
+
+<Note>
+  The `ctx.Params` map is populated by your router. For example, if your route is `/users/:id`, the router should set `ctx.Params["id"]`.
+</Note>
+
+### CookieResolver
+
+**Tag:** `json:"cookie:<name>"`  
+**Source:** `request.Cookie(name)`  
+**Returns:** Type-converted cookie value
+
+```go
+type GetUserRequest struct {
+    SessionID string `json:"cookie:session_id"`
+}
+```
+
+Returns 400 if the cookie is missing.
+
+### FormResolver
+
+**Tag:** `json:"form:<name>"`  
+**Source:** `request.PostFormValue(name)`  
+**Returns:** Type-converted form field
+
+```go
+type CreateUserRequest struct {
+    Name  string `json:"form:name"`
+    Email string `json:"form:email"`
+}
+```
+
+<Warning>
+  Cannot be used together with `json:"body"`. Form data and JSON body both consume the request body.
+</Warning>
+
+### FileResolver
+
+**Tag:** `json:"file:<name>"`  
+**Source:** `request.MultipartForm.File[name]`  
+**Returns:** `*multipart.FileHeader`
+
+```go
+type UploadRequest struct {
+    Avatar *multipart.FileHeader `json:"file:avatar"`
+}
+```
+
+<Warning>
+  Cannot be used together with `json:"body"`. Multipart form data and JSON body both consume the request body.
+</Warning>
+
+## String type conversion
+
+Five resolvers (header, query, path, cookie, form) use automatic string-to-type conversion via the shared `convertStringToType()` function.
+
+See [Type Conversion](/concepts/type-conversion) for the full list of supported types.
+
+## Resolver lifecycle
+
+<Steps>
+  <Step title="Creation (startup)">
+    When `Adapt()` is called, it inspects the input struct's tags and creates a resolver for each tagged field.
+  </Step>
+  
+  <Step title="Storage (startup)">
+    Resolvers are stored in a slice and captured by the adapter closure.
+  </Step>
+  
+  <Step title="Resolution (per request)">
+    For each request, the adapter calls `Resolve()` on each resolver, passing the request context.
+  </Step>
+  
+  <Step title="Field assignment (per request)">
+    The adapter uses reflection to set the resolved value on the struct field.
+  </Step>
+</Steps>
+
+## Custom resolvers
+
+You can create custom resolvers by implementing the `FieldResolver` interface:
+
+```go
+type CustomResolver struct {
+    fieldIdx int
+    // ... other fields
+}
+
+func (r *CustomResolver) FieldIndex() int {
+    return r.fieldIdx
+}
+
+func (r *CustomResolver) Resolve(ctx *Context) (reflect.Value, error) {
+    // Extract value from ctx.Request
+    // Convert to appropriate type
+    // Return reflect.Value or error
+}
+```
+
+Then register it during the resolver building phase. See the source code in `pkg/handler/resolver.go` for examples.
+
+## Error handling
+
+Resolvers return errors for:
+
+- Malformed input (e.g., `"abc"` for an `int` field)
+- Missing required data (e.g., cookie not found)
+- Type conversion failures
+- JSON decoding errors (body resolver only)
+
+The adapter catches these errors and returns a 400 Bad Request response with a JSON error message.
+
+<Info>
+  Resolver errors are **client errors** (400), not server errors (500). They indicate the request was malformed or incomplete.
+</Info>

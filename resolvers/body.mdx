@@ -1,0 +1,123 @@
+---
+title: Body resolver
+description: Parse JSON request body into a struct field
+---
+
+The body resolver parses the JSON request body into a struct field.
+
+## Tag syntax
+
+```go
+json:"body"
+```
+
+## Supported types
+
+- Any struct type (`CreateUserRequest`)
+- Pointer to struct (`*CreateUserRequest`)
+
+## Basic example
+
+```go
+type CreateUserRequest struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+
+func CreateUser(req struct {
+    Body CreateUserRequest `json:"body"`
+}) (*UserResponse, error) {
+    // req.Body.Name and req.Body.Email are populated from JSON
+    return &UserResponse{
+        ID:    "user_123",
+        Name:  req.Body.Name,
+        Email: req.Body.Email,
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+curl -X POST localhost:8080/users \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"John","email":"john@example.com"}'
+```
+
+## Pointer body
+
+Use a pointer type if you need to distinguish between an empty body and an omitted body:
+
+```go
+func CreateUser(req struct {
+    Body *CreateUserRequest `json:"body"`
+}) (*UserResponse, error) {
+    if req.Body == nil {
+        return nil, fmt.Errorf("body is required")
+    }
+    // Process req.Body...
+}
+```
+
+## Combining with other resolvers
+
+You can combine the body resolver with header, query, path, and cookie resolvers:
+
+```go
+func CreateUser(req struct {
+    Body  CreateUserRequest `json:"body"`
+    Token string            `json:"header:Authorization"`
+}) (*UserResponse, error) {
+    // Validate token, then create user
+    fmt.Println("Token:", req.Token)
+    // Process req.Body...
+}
+```
+
+## Behavior
+
+<ParamField path="Implementation" type="Details">
+  Uses `json.NewDecoder(request.Body).Decode(...)` under the hood
+</ParamField>
+
+<ParamField path="Error handling" type="Validation">
+  Returns 400 Bad Request if the body is malformed JSON
+</ParamField>
+
+<ParamField path="Restrictions" type="Important">
+  - Only one `json:"body"` field is allowed per input struct
+  - Cannot be combined with `json:"form:..."` or `json:"file:..."` tags (both consume the request body)
+  - A second `json:"body"` tag causes a startup error during `handler.Adapt()`
+</ParamField>
+
+<ParamField path="JSON field mapping" type="Note">
+  The body struct uses standard `json` tags for field mapping (`json:"name"`, `json:"email"`, etc.)
+</ParamField>
+
+## Comparison with other frameworks
+
+| Framework | Code |
+|-----------|------|
+| **go-fast** | `Body CreateUserRequest \`json:"body"\`` |
+| Gin | `var req CreateUserRequest; c.ShouldBindJSON(&req)` |
+| Fiber | `var req CreateUserRequest; c.BodyParser(&req)` |
+| net/http | `var req CreateUserRequest; json.NewDecoder(r.Body).Decode(&req)` |
+
+## Edge cases
+
+**Empty body:**
+If the request body is empty or contains `null`, the struct will be zero-initialized:
+
+```go
+// POST with body: {}
+req.Body.Name  // ""
+req.Body.Email // ""
+```
+
+**Invalid JSON:**
+Returns 400 with error message:
+```json
+{"error": "decode body: invalid character..."}
+```
+
+**Large bodies:**
+No automatic size limit is enforced by the resolver. Use middleware to limit request body size if needed.

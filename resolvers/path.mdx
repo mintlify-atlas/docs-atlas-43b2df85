@@ -1,0 +1,195 @@
+---
+title: Path resolver
+description: Extract path variables from URLs
+---
+
+The path variable resolver extracts a value from URL path parameters (e.g., `/users/:id`).
+
+## Tag syntax
+
+```go
+json:"path:<param-name>"
+```
+
+<ParamField path="param-name" type="string" required>
+  The name of the path parameter to extract (must match the router's parameter name)
+</ParamField>
+
+## Supported types
+
+- `string`
+- `bool`
+- `int`, `int8`, `int16`, `int32`, `int64`
+- `uint`, `uint8`, `uint16`, `uint32`, `uint64`
+- `float32`, `float64`
+- Pointers to any of the above types
+
+## Basic example
+
+```go
+func GetUser(req struct {
+    ID int `json:"path:id"`
+}) (*UserResponse, error) {
+    return &UserResponse{
+        ID:   req.ID,
+        Name: fmt.Sprintf("User #%d", req.ID),
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+# GET /users/42
+curl localhost:8080/users/42
+
+# Response:
+{
+  "id": 42,
+  "name": "User #42"
+}
+```
+
+## Type conversion
+
+Path variables are automatically converted from strings to your declared type:
+
+```go
+func GetOrder(req struct {
+    UserID  int    `json:"path:user_id"`
+    OrderID string `json:"path:order_id"`
+}) (*OrderResponse, error) {
+    // GET /users/123/orders/ord-456
+    // req.UserID  = 123
+    // req.OrderID = "ord-456"
+}
+```
+
+## Multiple path variables
+
+```go
+func GetResource(req struct {
+    OrgID      int    `json:"path:org_id"`
+    ProjectID  int    `json:"path:project_id"`
+    ResourceID string `json:"path:resource_id"`
+}) (*Resource, error) {
+    // GET /orgs/10/projects/20/resources/res-abc
+    // req.OrgID      = 10
+    // req.ProjectID  = 20
+    // req.ResourceID = "res-abc"
+}
+```
+
+## Behavior
+
+<ParamField path="Implementation" type="Details">
+  Reads from `ctx.Params[name]` — a `map[string]string` populated by the router
+</ParamField>
+
+<ParamField path="Missing parameters" type="Error">
+  Returns 400 Bad Request if the parameter is missing from the map (unlike query/header which return zero values)
+</ParamField>
+
+<ParamField path="Type conversion" type="Automatic">
+  Uses `strconv` package for conversion. Returns 400 if conversion fails (e.g., `/users/abc` for an `int` field)
+</ParamField>
+
+<ParamField path="Router requirement" type="Important">
+  **Requires a router** that populates `ctx.Params` before the handler runs. go-fast's built-in radix tree router is on the roadmap.
+</ParamField>
+
+## Router integration
+
+Path parameters require a router that populates the `ctx.Params` map. Most popular Go routers support this pattern:
+
+**Example router setup (conceptual):**
+```go
+router := NewRouter()
+router.GET("/users/:id", handler.Adapt(GetUser))
+router.GET("/orgs/:org_id/projects/:project_id", handler.Adapt(GetProject))
+```
+
+The router extracts `:id`, `:org_id`, etc. from the URL and stores them in `ctx.Params` before calling your handler.
+
+## Common use cases
+
+**Resource by ID:**
+```go
+func GetUser(req struct {
+    ID int `json:"path:id"`
+}) (*UserResponse, error) {
+    // GET /users/42
+    user := db.FindUserByID(req.ID)
+    return user, nil
+}
+```
+
+**Nested resources:**
+```go
+func GetComment(req struct {
+    PostID    int `json:"path:post_id"`
+    CommentID int `json:"path:comment_id"`
+}) (*CommentResponse, error) {
+    // GET /posts/10/comments/25
+    comment := db.FindComment(req.PostID, req.CommentID)
+    return comment, nil
+}
+```
+
+**Combined with query params:**
+```go
+func GetUserOrders(req struct {
+    UserID int    `json:"path:user_id"`
+    Status string `json:"query:status"`
+    Page   int    `json:"query:page"`
+}) (*OrderList, error) {
+    // GET /users/42/orders?status=completed&page=2
+    orders := db.FindOrdersByUser(req.UserID, req.Status, req.Page)
+    return orders, nil
+}
+```
+
+## Comparison with other frameworks
+
+| Framework | Code |
+|-----------|------|
+| **go-fast** | `ID int \`json:"path:id"\`` |
+| Gin | `idStr := c.Param("id"); id, _ := strconv.Atoi(idStr)` |
+| Fiber | `idStr := c.Params("id"); id, _ := strconv.Atoi(idStr)` |
+| Chi | `idStr := chi.URLParam(r, "id"); id, _ := strconv.Atoi(idStr)` |
+
+## Edge cases
+
+**Missing path parameter:**
+```bash
+# Router expects /users/:id but ctx.Params["id"] is empty
+curl localhost:8080/users/
+# Response: 400 Bad Request
+{"error": "path variable \"id\" not found"}
+```
+
+**Invalid type conversion:**
+```bash
+# GET /users/abc (invalid int)
+curl localhost:8080/users/abc
+# Response: 400 Bad Request
+{"error": "resolve path variable \"id\": strconv.ParseInt: parsing \"abc\": invalid syntax"}
+```
+
+**URL encoding:**
+Path parameters are automatically URL-decoded by the router:
+```bash
+# GET /users/john%20doe
+curl localhost:8080/users/john%20doe
+# req.Name = "john doe"
+```
+
+## Roadmap note
+
+go-fast currently requires an external router to populate `ctx.Params`. A built-in radix tree router is planned for a future release, which will provide:
+
+- Zero-allocation path matching
+- Automatic parameter extraction
+- Middleware support
+- Full integration with the resolver system
+
+Until then, path resolvers work seamlessly with any router that populates `ctx.Params` before calling the handler.

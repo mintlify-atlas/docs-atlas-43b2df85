@@ -1,0 +1,112 @@
+---
+title: Resolvers
+description: Automatically extract and convert request data into your handler's input struct fields
+---
+
+Resolvers are the core of go-fast's developer experience improvement. They automatically extract and convert request data into your handler's input struct fields based on struct tags.
+
+## How it works
+
+When you call `handler.Adapt(fn)`, go-fast:
+
+1. Inspects the input struct's fields and their `json` tags
+2. Builds a typed resolver for each tagged field
+3. At request time, each resolver extracts its value from the correct source and converts it to the declared Go type
+
+## Tag format
+
+Resolvers use the `json` struct tag with a specific format:
+
+```go
+json:"<source>:<name>"
+```
+
+| Source | Tag | Reads from |
+|--------|-----|------------|
+| Body | `json:"body"` | `request.Body` (JSON) |
+| Header | `json:"header:<name>"` | `request.Header.Get(name)` |
+| Query | `json:"query:<name>"` | `request.URL.Query().Get(name)` |
+| Path | `json:"path:<name>"` | `ctx.Params[name]` |
+| Cookie | `json:"cookie:<name>"` | `request.Cookie(name)` |
+| Form | `json:"form:<name>"` | `request.PostFormValue(name)` |
+| File | `json:"file:<name>"` | `request.MultipartForm.File[name]` |
+
+## Example: Multiple resolvers in one handler
+
+```go
+func CreateOrder(req struct {
+    Body     OrderBody `json:"body"`
+    UserID   int       `json:"path:user_id"`
+    Currency string    `json:"query:currency"`
+    Token    string    `json:"header:Authorization"`
+    Session  string    `json:"cookie:sid"`
+}) (*OrderResponse, error) {
+    // req.Body     — parsed from JSON body
+    // req.UserID   — extracted from URL path, converted to int
+    // req.Currency — extracted from ?currency=...
+    // req.Token    — extracted from Authorization header
+    // req.Session  — extracted from sid cookie
+}
+```
+
+## Rules
+
+- Fields must be **exported** (uppercase first letter)
+- Only one `json:"body"` field is allowed per struct
+- Tag names cannot be empty (e.g., `json:"header:"` is invalid)
+- Untagged or `json:"-"` fields are skipped
+- String-based resolvers (header, query, path, cookie, form) support automatic type conversion
+- File fields must be `*multipart.FileHeader`
+- `json:"body"` cannot be combined with `json:"form:..."` or `json:"file:..."` (both consume the request body)
+
+## Type conversion
+
+String-based resolvers (header, query, path, cookie, form) automatically convert string values to your declared field type using Go's `strconv` package.
+
+**Supported types:**
+- `string`
+- `bool`
+- `int`, `int8`, `int16`, `int32`, `int64`
+- `uint`, `uint8`, `uint16`, `uint32`, `uint64`
+- `float32`, `float64`
+- Pointers to any of the above types
+
+**Empty value behavior:**
+- Empty strings resolve to the zero value of the field type
+- For optional fields, use pointer types (e.g., `*int`, `*string`)
+
+```go
+func SearchUsers(req struct {
+    Query string `json:"query:q"`      // "" if missing
+    Page  int    `json:"query:page"`   // 0 if missing
+    Limit *int   `json:"query:limit"`  // nil if missing
+}) (*SearchResult, error) {
+    // Page defaults to 0, Limit can be checked for nil
+}
+```
+
+## Resolver pages
+
+<CardGroup cols={2}>
+  <Card title="Body resolver" icon="brackets-curly" href="/resolvers/body">
+    Parse JSON request body into a struct
+  </Card>
+  <Card title="Header resolver" icon="heading" href="/resolvers/header">
+    Extract values from HTTP headers
+  </Card>
+  <Card title="Query resolver" icon="magnifying-glass" href="/resolvers/query">
+    Extract URL query parameters
+  </Card>
+  <Card title="Path resolver" icon="route" href="/resolvers/path">
+    Extract path variables from URLs
+  </Card>
+  <Card title="Cookie resolver" icon="cookie" href="/resolvers/cookie">
+    Extract values from HTTP cookies
+  </Card>
+  <Card title="Form resolver" icon="input-text" href="/resolvers/form">
+    Extract form data from POST body
+  </Card>
+  <Card title="File resolver" icon="file-arrow-up" href="/resolvers/file">
+    Handle multipart file uploads
+  </Card>
+</CardGroup>

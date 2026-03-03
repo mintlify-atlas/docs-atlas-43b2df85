@@ -1,0 +1,170 @@
+---
+title: Header resolver
+description: Extract values from HTTP request headers
+---
+
+The header resolver extracts a value from an HTTP request header.
+
+## Tag syntax
+
+```go
+json:"header:<header-name>"
+```
+
+<ParamField path="header-name" type="string" required>
+  The name of the HTTP header to extract (case-insensitive per HTTP spec)
+</ParamField>
+
+## Supported types
+
+- `string`
+- `bool`
+- `int`, `int8`, `int16`, `int32`, `int64`
+- `uint`, `uint8`, `uint16`, `uint32`, `uint64`
+- `float32`, `float64`
+- Pointers to any of the above types
+
+## Basic example
+
+```go
+func GetProfile(req struct {
+    Token     string `json:"header:Authorization"`
+    RequestID string `json:"header:X-Request-ID"`
+}) (*ProfileResponse, error) {
+    // req.Token     = "Bearer abc123"
+    // req.RequestID = "req-456"
+}
+```
+
+**cURL example:**
+```bash
+curl localhost:8080/profile \
+  -H 'Authorization: Bearer abc123' \
+  -H 'X-Request-ID: req-456'
+```
+
+## Type conversion
+
+Headers are automatically converted from strings to your declared type:
+
+```go
+func Handler(req struct {
+    Retries   int    `json:"header:X-Retry-Count"`
+    RateLimit uint64 `json:"header:X-Rate-Limit"`
+    Debug     bool   `json:"header:X-Debug"`
+}) (*Response, error) {
+    // X-Retry-Count: "3"   → req.Retries = 3
+    // X-Rate-Limit: "1000" → req.RateLimit = 1000
+    // X-Debug: "true"      → req.Debug = true
+}
+```
+
+## Optional headers with pointers
+
+Use pointer types to distinguish between missing headers and empty values:
+
+```go
+func Handler(req struct {
+    UserAgent *string `json:"header:User-Agent"`
+    Timeout   *int    `json:"header:X-Timeout"`
+}) (*Response, error) {
+    if req.UserAgent == nil {
+        // Header was not sent
+    } else if *req.UserAgent == "" {
+        // Header was sent but empty
+    }
+}
+```
+
+## Behavior
+
+<ParamField path="Implementation" type="Details">
+  Reads via `request.Header.Get(name)` — case-insensitive per HTTP spec
+</ParamField>
+
+<ParamField path="Missing headers" type="Zero values">
+  Missing headers resolve to the zero value of the field type:
+  - `string`: `""`
+  - `int`: `0`
+  - `bool`: `false`
+  - Pointer types: `nil`
+</ParamField>
+
+<ParamField path="Type conversion" type="Automatic">
+  Uses `strconv` package for conversion. Returns 400 if conversion fails (e.g., `"abc"` to `int`)
+</ParamField>
+
+<ParamField path="Case sensitivity" type="Note">
+  Header names are case-insensitive per HTTP spec:
+  - `json:"header:Authorization"` matches `Authorization`, `authorization`, or `AUTHORIZATION`
+</ParamField>
+
+## Common use cases
+
+**Authentication:**
+```go
+func ProtectedHandler(req struct {
+    Token string `json:"header:Authorization"`
+}) (*Response, error) {
+    if !strings.HasPrefix(req.Token, "Bearer ") {
+        return nil, fmt.Errorf("invalid token")
+    }
+    // Validate token...
+}
+```
+
+**Request tracing:**
+```go
+func Handler(req struct {
+    TraceID   string `json:"header:X-Trace-ID"`
+    RequestID string `json:"header:X-Request-ID"`
+}) (*Response, error) {
+    // Log with trace/request IDs
+}
+```
+
+**Content negotiation:**
+```go
+func Handler(req struct {
+    Accept       string `json:"header:Accept"`
+    AcceptLang   string `json:"header:Accept-Language"`
+}) (*Response, error) {
+    // Return response based on Accept header
+}
+```
+
+## Comparison with other frameworks
+
+| Framework | Code |
+|-----------|------|
+| **go-fast** | `Token string \`json:"header:Authorization"\`` |
+| Gin | `token := c.GetHeader("Authorization")` |
+| Fiber | `token := c.Get("Authorization")` |
+| net/http | `token := r.Header.Get("Authorization")` |
+
+## Edge cases
+
+**Multiple header values:**
+Currently only the first value is returned. For headers with multiple values (like `Accept`), use `request.Header["Accept"]` directly.
+
+**Invalid type conversion:**
+```bash
+# Request with X-Count: "abc"
+curl -H 'X-Count: abc' localhost:8080/api
+
+# Response: 400 Bad Request
+{"error": "resolve header \"X-Count\": strconv.ParseInt: parsing \"abc\": invalid syntax"}
+```
+
+**Empty vs missing:**
+```go
+// Both resolve to "" for string fields:
+// 1. Header not sent at all
+// 2. Header sent with empty value: "X-Custom: "
+
+// Use pointer types to distinguish:
+type Request struct {
+    Custom *string `json:"header:X-Custom"`
+}
+// nil = not sent, "" = sent but empty
+```

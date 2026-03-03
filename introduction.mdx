@@ -1,0 +1,152 @@
+---
+title: Introduction
+description: A Go HTTP framework that eliminates handler boilerplate using struct tags and plain functions
+---
+
+<Info>
+  **go-fast** turns plain Go functions into HTTP handlers. Declare what you need with struct tags, and the framework handles extraction, parsing, validation, and response writing.
+</Info>
+
+## The problem with Go frameworks today
+
+Every major Go framework requires the same tedious boilerplate in every handler:
+
+```go Gin/Echo/Fiber pattern
+func CreateUser(c *gin.Context) {
+    token := c.GetHeader("Authorization")       // manual
+    var req CreateUserRequest
+    if err := c.ShouldBindJSON(&req); err != nil { // manual
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+    user, err := createUser(req)
+    if err != nil {                               // manual
+        c.JSON(500, gin.H{"error": err.Error()})
+        return
+    }
+    c.JSON(200, user)                             // manual
+}
+```
+
+Every handler repeats the same pattern: extract, parse, convert, validate, call business logic, check errors, write response. It's tedious, error-prone, and obscures what your code actually does.
+
+## The go-fast approach
+
+With go-fast, you write plain functions that declare their requirements:
+
+```go go-fast handler
+func CreateUser(req struct {
+    Body  CreateUserRequest `json:"body"`
+    Token string            `json:"header:Authorization"`
+}) (*UserResponse, error) {
+    fmt.Println("Token:", req.Token)
+    return &UserResponse{ID: "123", Name: req.Body.Name}, nil
+}
+
+h, _ := handler.Adapt(CreateUser)
+http.HandleFunc("/users", h)
+```
+
+That's it. No manual parsing, no manual error handling, no manual response writing. Declare what you need, get it.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Zero boilerplate" icon="broom">
+    No manual extraction, parsing, validation, or error handling. Write pure business logic.
+  </Card>
+  
+  <Card title="Type-safe parameter resolution" icon="shield-check">
+    Query params, headers, path variables, and cookies are automatically converted to the declared Go type (int, bool, float64, etc.).
+  </Card>
+  
+  <Card title="Plain functions" icon="function">
+    Handlers are regular Go functions with struct inputs. No framework context parameter. Easy to test and reason about.
+  </Card>
+  
+  <Card title="Fast runtime" icon="bolt">
+    Reflection analysis happens once at startup. The per-request path is a pre-built closure with minimal overhead.
+  </Card>
+  
+  <Card title="7 resolver types" icon="puzzle-piece">
+    Extract data from body, headers, query params, path variables, cookies, form fields, and uploaded files using struct tags.
+  </Card>
+  
+  <Card title="Automatic error handling" icon="circle-exclamation">
+    Return an error as the last value and go-fast writes a 500 response automatically. Return nothing for 204 No Content.
+  </Card>
+</CardGroup>
+
+## How it works
+
+go-fast uses struct tags to describe where request data comes from:
+
+| Source | Tag | Example |
+|--------|-----|----------|
+| JSON body | `json:"body"` | `Body CreateUserRequest \`json:"body"\`` |
+| Header | `json:"header:<name>"` | `Token string \`json:"header:Authorization"\`` |
+| Query param | `json:"query:<name>"` | `Page int \`json:"query:page"\`` |
+| Path variable | `json:"path:<name>"` | `ID int \`json:"path:id"\`` |
+| Cookie | `json:"cookie:<name>"` | `Session string \`json:"cookie:session_id"\`` |
+| Form field | `json:"form:<name>"` | `Title string \`json:"form:title"\`` |
+| Uploaded file | `json:"file:<name>"` | `Doc *multipart.FileHeader \`json:"file:document"\`` |
+
+<Note>
+  Automatic type conversion works for all primitive types: string, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, bool, and their pointer variants.
+</Note>
+
+## Core principles
+
+<Steps>
+  <Step title="Declare, don't extract">
+    Struct tags describe where data comes from. The framework does the rest.
+  </Step>
+  
+  <Step title="Analyze once, run fast">
+    Reflection happens at startup. The per-request closure is pre-wired with zero reflection overhead.
+  </Step>
+  
+  <Step title="Plain functions">
+    Handlers are regular Go functions. No framework-specific context parameter. Easy to test, easy to read.
+  </Step>
+  
+  <Step title="Type-safe">
+    All request parameters are automatically converted to the declared Go type with validation.
+  </Step>
+  
+  <Step title="Zero magic at runtime">
+    Everything is explicit via struct tags. No hidden conventions, no surprises.
+  </Step>
+</Steps>
+
+## What makes go-fast different
+
+<AccordionGroup>
+  <Accordion title="No framework context">
+    Unlike Gin, Echo, or Fiber, go-fast handlers don't take a framework-specific context object. Your functions are pure Go functions that are trivial to unit test.
+  </Accordion>
+  
+  <Accordion title="Compile-time safety">
+    Struct tags are analyzed at startup via `handler.Adapt()`. If your tags are invalid or types are incompatible, you get an error before your server starts.
+  </Accordion>
+  
+  <Accordion title="Automatic response handling">
+    Return a struct and go-fast writes it as JSON with 200 OK. Return an error and it writes a 500. Return nothing and it writes 204 No Content. No manual response code handling.
+  </Accordion>
+  
+  <Accordion title="Mix and match resolvers">
+    A single handler can use body, headers, query params, path variables, cookies, form fields, and file uploads in any combination. No special syntax or method calls needed.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first go-fast handler in 5 minutes
+  </Card>
+  
+  <Card title="Installation" icon="download" href="/installation">
+    Install go-fast and verify your setup
+  </Card>
+</CardGroup>

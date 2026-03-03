@@ -1,0 +1,328 @@
+---
+title: Installation
+description: Install go-fast and verify your setup
+---
+
+go-fast is distributed as a standard Go module. This guide covers installation, setup, and verification.
+
+## Requirements
+
+<CardGroup cols={2}>
+  <Card title="Go version" icon="golang">
+    Go 1.18 or later (struct tags require generics support)
+  </Card>
+  
+  <Card title="Dependencies" icon="box">
+    Zero external dependencies—uses only the Go standard library
+  </Card>
+</CardGroup>
+
+## Install the module
+
+<Steps>
+  <Step title="Initialize your Go module (if needed)">
+    If you're starting a new project:
+    
+    ```bash
+    mkdir my-api
+    cd my-api
+    go mod init github.com/yourusername/my-api
+    ```
+  </Step>
+  
+  <Step title="Install go-fast">
+    ```bash
+    go get github.com/sohamratnaparkhi/go-fast
+    ```
+    
+    This downloads the latest version and adds it to your `go.mod` file.
+  </Step>
+  
+  <Step title="Verify installation">
+    Check that go-fast appears in your `go.mod`:
+    
+    ```bash
+    cat go.mod
+    ```
+    
+    You should see:
+    
+    ```go go.mod
+    module github.com/yourusername/my-api
+    
+    go 1.21
+    
+    require github.com/sohamratnaparkhi/go-fast v0.1.0
+    ```
+  </Step>
+</Steps>
+
+## Verify your setup
+
+Create a minimal handler to confirm everything works:
+
+<CodeGroup>
+
+```go main.go
+package main
+
+import (
+    "fmt"
+    "net/http"
+    
+    "github.com/sohamratnaparkhi/go-fast/pkg/handler"
+)
+
+type HealthResponse struct {
+    Status string `json:"status"`
+}
+
+func Health(req struct{}) (*HealthResponse, error) {
+    return &HealthResponse{Status: "ok"}, nil
+}
+
+func main() {
+    h, err := handler.Adapt(Health)
+    if err != nil {
+        panic(err)
+    }
+    
+    http.HandleFunc("/health", h)
+    fmt.Println("Server running on :8080")
+    fmt.Println("Test: curl localhost:8080/health")
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+</CodeGroup>
+
+Run it:
+
+```bash
+go run main.go
+```
+
+Test it:
+
+```bash
+curl localhost:8080/health
+```
+
+Expected response:
+
+```json
+{"status":"ok"}
+```
+
+<Check>
+  If you see the JSON response, go-fast is installed correctly!
+</Check>
+
+## Project structure
+
+Here's a typical project structure for a go-fast API:
+
+```
+my-api/
+├── go.mod
+├── go.sum
+├── main.go
+├── handlers/
+│   ├── users.go
+│   ├── orders.go
+│   └── auth.go
+├── models/
+│   ├── user.go
+│   └── order.go
+└── middleware/
+    └── auth.go
+```
+
+<Tip>
+  Since go-fast handlers are plain functions, you can organize them however you prefer. They're easy to split across packages and trivial to unit test.
+</Tip>
+
+## IDE setup
+
+### VS Code
+
+Install the Go extension for struct tag autocomplete and validation:
+
+1. Install the [Go extension](https://marketplace.visualstudio.com/items?itemName=golang.go)
+2. Enable struct tag completion in settings:
+   ```json settings.json
+   {
+     "go.useLanguageServer": true,
+     "gopls": {
+       "ui.completion.usePlaceholders": true
+     }
+   }
+   ```
+
+### GoLand
+
+GoLand has built-in support for struct tag validation and completion. No additional setup required.
+
+## Common installation issues
+
+<AccordionGroup>
+  <Accordion title="'go get' fails with 'cannot find module'">
+    Make sure you have a `go.mod` file in your project:
+    
+    ```bash
+    go mod init github.com/yourusername/my-project
+    ```
+    
+    Then retry:
+    
+    ```bash
+    go get github.com/sohamratnaparkhi/go-fast
+    ```
+  </Accordion>
+  
+  <Accordion title="'handler.Adapt' not found">
+    Verify the import path in your Go file:
+    
+    ```go
+    import "github.com/sohamratnaparkhi/go-fast/pkg/handler"
+    ```
+    
+    Note the `/pkg/handler` suffix. The main API is in the `handler` package.
+  </Accordion>
+  
+  <Accordion title="Go version incompatibility">
+    go-fast requires Go 1.18 or later. Check your version:
+    
+    ```bash
+    go version
+    ```
+    
+    If you're on an older version, upgrade Go or update your `go.mod`:
+    
+    ```go go.mod
+    go 1.21
+    ```
+  </Accordion>
+  
+  <Accordion title="Import cycle errors">
+    If you're splitting handlers across packages and encounter import cycles, ensure your handler functions don't import each other directly. Use dependency injection or shared model packages:
+    
+    ```go Good pattern
+    // models/user.go
+    package models
+    
+    type User struct {
+        ID   string `json:"id"`
+        Name string `json:"name"`
+    }
+    
+    // handlers/users.go
+    package handlers
+    
+    import "yourmodule/models"
+    
+    func GetUser(req struct {
+        ID int `json:"path:id"`
+    }) (*models.User, error) {
+        // ...
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Upgrade go-fast
+
+To upgrade to the latest version:
+
+```bash
+go get -u github.com/sohamratnaparkhi/go-fast
+go mod tidy
+```
+
+To pin a specific version:
+
+```bash
+go get github.com/sohamratnaparkhi/go-fast@v0.2.0
+```
+
+## Building for production
+
+<Steps>
+  <Step title="Build the binary">
+    ```bash
+    go build -o api main.go
+    ```
+  </Step>
+  
+  <Step title="Run the binary">
+    ```bash
+    ./api
+    ```
+  </Step>
+  
+  <Step title="Build with optimizations (optional)">
+    For smaller binaries and better performance:
+    
+    ```bash
+    go build -ldflags="-s -w" -o api main.go
+    ```
+    
+    - `-s` strips the symbol table
+    - `-w` strips debug info
+  </Step>
+</Steps>
+
+<Note>
+  go-fast has zero runtime reflection overhead beyond the initial `handler.Adapt()` call. All analysis happens at startup, so your handlers run at full speed.
+</Note>
+
+## Docker setup
+
+Here's a minimal Dockerfile for go-fast applications:
+
+```dockerfile Dockerfile
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -ldflags="-s -w" -o api main.go
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+
+WORKDIR /root/
+COPY --from=builder /app/api .
+
+EXPOSE 8080
+CMD ["./api"]
+```
+
+Build and run:
+
+```bash
+docker build -t my-api .
+docker run -p 8080:8080 my-api
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first handler in 5 minutes
+  </Card>
+  
+  <Card title="Resolvers" icon="puzzle-piece" href="/resolvers/overview">
+    Learn about all 7 resolver types
+  </Card>
+  
+  <Card title="Examples" icon="code" href="/guides/examples">
+    Browse real-world examples
+  </Card>
+  
+  <Card title="API reference" icon="book" href="/api/handler">
+    Explore the full API documentation
+  </Card>
+</CardGroup>

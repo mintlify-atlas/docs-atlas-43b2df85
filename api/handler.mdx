@@ -1,0 +1,178 @@
+---
+title: Handler package
+description: Core API for adapting user functions into HTTP handlers
+---
+
+The `handler` package provides the core API for converting Go functions into HTTP handlers with automatic request parsing and response serialization.
+
+## Adapt
+
+Validates and compiles a user handler function into an `http.HandlerFunc`.
+
+The returned closure reuses precomputed metadata and field resolvers so that expensive reflection analysis happens once at startup, not on every request.
+
+```go
+func Adapt(fn interface{}) (http.HandlerFunc, error)
+```
+
+<ParamField path="fn" type="interface{}" required>
+  The user handler function to adapt. Must have exactly one input parameter that is a struct type.
+</ParamField>
+
+<ResponseField name="http.HandlerFunc" type="http.HandlerFunc">
+  The compiled HTTP handler function that can be registered with any HTTP router.
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Returns an error if:
+  - `fn` is not a function
+  - The function does not have exactly 1 input parameter
+  - The input parameter is not a struct
+  - Field resolver construction fails
+</ResponseField>
+
+### Example
+
+```go
+package main
+
+import (
+    "net/http"
+    "github.com/sohamratnaparkhi/go-fast/pkg/handler"
+)
+
+type CreateUserRequest struct {
+    Name  string `json:"body"`
+    Token string `json:"header:Authorization"`
+}
+
+type UserResponse struct {
+    ID   int    `json:"id"`
+    Name string `json:"name"`
+}
+
+func CreateUser(req CreateUserRequest) (UserResponse, error) {
+    // Business logic here
+    return UserResponse{ID: 1, Name: req.Name}, nil
+}
+
+func main() {
+    h, err := handler.Adapt(CreateUser)
+    if err != nil {
+        panic(err)
+    }
+    
+    http.HandleFunc("/users", h)
+    http.ListenAndServe(":8080", nil)
+}
+```
+
+## Analyze
+
+Inspects a handler function and returns immutable metadata used by `Adapt`.
+
+The returned metadata is computed once at startup and reused per request.
+
+```go
+func Analyze(fn interface{}) (*HandlerMetadata, error)
+```
+
+<ParamField path="fn" type="interface{}" required>
+  The function to analyze using reflection.
+</ParamField>
+
+<ResponseField name="*HandlerMetadata" type="*HandlerMetadata">
+  Precomputed metadata about the function's signature, input types, output types, and error handling.
+</ResponseField>
+
+<ResponseField name="error" type="error">
+  Returns an error if `fn` is not a function.
+</ResponseField>
+
+### Example
+
+```go
+meta, err := handler.Analyze(CreateUser)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Inputs: %d, Outputs: %d, Returns error: %v\n",
+    meta.NumInputs, meta.NumOutputs, meta.ReturnsError)
+```
+
+## HandlerMetadata
+
+Contains precomputed information about a user handler function. It is created once by `Analyze` and reused by `Adapt` for each request.
+
+```go
+type HandlerMetadata struct {
+    FuncValue   reflect.Value
+    FuncType    reflect.Type
+    NumInputs   int
+    NumOutputs  int
+    InputTypes  []reflect.Type
+    OutputTypes []reflect.Type
+    ReturnsError bool
+}
+```
+
+<ResponseField name="FuncValue" type="reflect.Value">
+  The reflected value of the handler function, used to call it with parsed arguments.
+</ResponseField>
+
+<ResponseField name="FuncType" type="reflect.Type">
+  The reflected type of the handler function.
+</ResponseField>
+
+<ResponseField name="NumInputs" type="int">
+  Number of input parameters the handler accepts.
+</ResponseField>
+
+<ResponseField name="NumOutputs" type="int">
+  Number of return values the handler produces.
+</ResponseField>
+
+<ResponseField name="InputTypes" type="[]reflect.Type">
+  Slice of reflected types for each input parameter.
+</ResponseField>
+
+<ResponseField name="OutputTypes" type="[]reflect.Type">
+  Slice of reflected types for each return value.
+</ResponseField>
+
+<ResponseField name="ReturnsError" type="bool">
+  True if the last return value implements the error interface.
+</ResponseField>
+
+## Behavior
+
+### Request processing
+
+When the adapted handler receives an HTTP request:
+
+1. Creates a `Context` with the request and path parameters
+2. Resolves the body field first (if present) using `BodyResolver`
+3. Resolves all other fields using their respective resolvers
+4. Calls the user function with the populated struct
+5. Handles the response based on return values
+
+### Response handling
+
+- If the handler returns an error (last return value), sends HTTP 500 with error message
+- If no non-error values are returned, sends HTTP 204 No Content
+- Otherwise, encodes the first return value as JSON with Content-Type: application/json
+
+### Error responses
+
+All error responses use this format:
+
+```json
+{
+  "error": "error message"
+}
+```
+
+- **400 Bad Request**: Field resolution errors, JSON decode errors
+- **500 Internal Server Error**: Handler returned error, JSON encode errors
+- **204 No Content**: Handler completed successfully with no return value

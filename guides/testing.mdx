@@ -1,0 +1,329 @@
+---
+title: Testing
+description: How to test handlers built with go-fast
+---
+
+go-fast handlers are plain functions, making them trivial to test without HTTP mocking.
+
+## Unit testing handlers
+
+Test handlers by calling them directly:
+
+```go
+func TestCreateUser(t *testing.T) {
+    resp, err := CreateUser(struct {
+        Body  CreateUserRequest `json:"body"`
+        Token string            `json:"header:Authorization"`
+    }{
+        Body: CreateUserRequest{
+            Name:  "John",
+            Email: "john@test.com",
+        },
+        Token: "Bearer abc",
+    })
+
+    if err != nil {
+        t.Fatalf("CreateUser() error = %v", err)
+    }
+
+    if resp.Name != "John" {
+        t.Errorf("name = %q, want %q", resp.Name, "John")
+    }
+    if resp.Email != "john@test.com" {
+        t.Errorf("email = %q, want %q", resp.Email, "john@test.com")
+    }
+}
+```
+
+No httptest, no recorder, no framework context needed.
+
+## Testing with all input types
+
+Test handlers that use multiple resolvers:
+
+```go
+func TestSearchUsers(t *testing.T) {
+    resp, err := SearchUsers(struct {
+        Query  string `json:"query:q"`
+        Page   int    `json:"query:page"`
+        Active bool   `json:"query:active"`
+    }{
+        Query:  "john",
+        Page:   2,
+        Active: true,
+    })
+
+    if err != nil {
+        t.Fatalf("SearchUsers() error = %v", err)
+    }
+
+    if resp.Query != "john" {
+        t.Errorf("query = %q, want %q", resp.Query, "john")
+    }
+    if resp.Page != 2 {
+        t.Errorf("page = %d, want %d", resp.Page, 2)
+    }
+    if !resp.Active {
+        t.Error("active = false, want true")
+    }
+}
+```
+
+## Testing error cases
+
+Test error handling without HTTP mocking:
+
+```go
+func TestCreateUser_EmptyEmail(t *testing.T) {
+    _, err := CreateUser(struct {
+        Body CreateUserRequest `json:"body"`
+    }{
+        Body: CreateUserRequest{
+            Name:  "John",
+            Email: "",
+        },
+    })
+
+    if err == nil {
+        t.Fatal("expected error for empty email, got nil")
+    }
+
+    want := "email is required"
+    if err.Error() != want {
+        t.Errorf("error = %q, want %q", err.Error(), want)
+    }
+}
+```
+
+## Integration testing with httptest
+
+For integration tests, use httptest to test the full HTTP handler:
+
+```go
+func TestCreateUserHTTP(t *testing.T) {
+    h, err := handler.Adapt(CreateUser)
+    if err != nil {
+        t.Fatalf("Adapt() error = %v", err)
+    }
+
+    body := bytes.NewBufferString(`{"name":"John","email":"john@test.com"}`)
+    req := httptest.NewRequest(http.MethodPost, "/users", body)
+    req.Header.Set("Authorization", "Bearer abc")
+
+    w := httptest.NewRecorder()
+    h(w, req)
+
+    if w.Code != http.StatusOK {
+        t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+    }
+
+    var resp UserResponse
+    if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+        t.Fatalf("decode response: %v", err)
+    }
+
+    if resp.Name != "John" {
+        t.Errorf("name = %q, want %q", resp.Name, "John")
+    }
+}
+```
+
+## Testing with table-driven tests
+
+Use table-driven tests for comprehensive coverage:
+
+```go
+func TestSearchUsers(t *testing.T) {
+    tests := []struct {
+        name   string
+        input  SearchInput
+        want   SearchResult
+        errMsg string
+    }{
+        {
+            name: "valid search",
+            input: SearchInput{
+                Query:  "john",
+                Page:   1,
+                Active: true,
+            },
+            want: SearchResult{
+                Query:  "john",
+                Page:   1,
+                Active: true,
+            },
+        },
+        {
+            name: "empty query",
+            input: SearchInput{
+                Query:  "",
+                Page:   0,
+                Active: false,
+            },
+            want: SearchResult{
+                Query:  "",
+                Page:   0,
+                Active: false,
+            },
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            resp, err := SearchUsers(struct {
+                Query  string `json:"query:q"`
+                Page   int    `json:"query:page"`
+                Active bool   `json:"query:active"`
+            }{
+                Query:  tt.input.Query,
+                Page:   tt.input.Page,
+                Active: tt.input.Active,
+            })
+
+            if tt.errMsg != "" {
+                if err == nil {
+                    t.Fatal("expected error, got nil")
+                }
+                if err.Error() != tt.errMsg {
+                    t.Errorf("error = %q, want %q", err.Error(), tt.errMsg)
+                }
+                return
+            }
+
+            if err != nil {
+                t.Fatalf("unexpected error: %v", err)
+            }
+
+            if !reflect.DeepEqual(*resp, tt.want) {
+                t.Errorf("got %+v, want %+v", resp, tt.want)
+            }
+        })
+    }
+}
+```
+
+## Testing file uploads
+
+For handlers with file uploads, create a multipart.FileHeader in tests:
+
+```go
+func TestUploadDocument(t *testing.T) {
+    // Create a fake file header
+    var buf bytes.Buffer
+    mw := multipart.NewWriter(&buf)
+    
+    hdr := make(textproto.MIMEHeader)
+    hdr.Set("Content-Disposition", `form-data; name="document"; filename="report.pdf"`)
+    hdr.Set("Content-Type", "application/pdf")
+    
+    part, _ := mw.CreatePart(hdr)
+    part.Write([]byte("pdf-content"))
+    mw.Close()
+
+    req := httptest.NewRequest(http.MethodPost, "/upload", &buf)
+    req.Header.Set("Content-Type", mw.FormDataContentType())
+
+    // Parse the form to populate FileHeader
+    req.ParseMultipartForm(10 << 20)
+    fileHeader := req.MultipartForm.File["document"][0]
+
+    resp, err := UploadDocument(struct {
+        Title    string                `json:"form:title"`
+        Document *multipart.FileHeader `json:"file:document"`
+    }{
+        Title:    "My Report",
+        Document: fileHeader,
+    })
+
+    if err != nil {
+        t.Fatalf("UploadDocument() error = %v", err)
+    }
+
+    if resp.Filename != "report.pdf" {
+        t.Errorf("filename = %q, want %q", resp.Filename, "report.pdf")
+    }
+}
+```
+
+## Mocking dependencies
+
+Use dependency injection to make handlers testable:
+
+```go
+type UserService interface {
+    Create(name, email string) (*User, error)
+}
+
+func NewCreateUserHandler(svc UserService) func(req struct {
+    Body CreateUserRequest `json:"body"`
+}) (*UserResponse, error) {
+    return func(req struct {
+        Body CreateUserRequest `json:"body"`
+    }) (*UserResponse, error) {
+        user, err := svc.Create(req.Body.Name, req.Body.Email)
+        if err != nil {
+            return nil, err
+        }
+        return &UserResponse{ID: user.ID}, nil
+    }
+}
+
+// In tests
+type mockUserService struct {
+    createFunc func(name, email string) (*User, error)
+}
+
+func (m *mockUserService) Create(name, email string) (*User, error) {
+    return m.createFunc(name, email)
+}
+
+func TestCreateUser_WithMock(t *testing.T) {
+    mock := &mockUserService{
+        createFunc: func(name, email string) (*User, error) {
+            return &User{ID: "123", Name: name}, nil
+        },
+    }
+
+    handler := NewCreateUserHandler(mock)
+    resp, err := handler(struct {
+        Body CreateUserRequest `json:"body"`
+    }{
+        Body: CreateUserRequest{Name: "John", Email: "john@test.com"},
+    })
+
+    if err != nil {
+        t.Fatalf("handler() error = %v", err)
+    }
+    if resp.ID != "123" {
+        t.Errorf("id = %q, want %q", resp.ID, "123")
+    }
+}
+```
+
+## Best practices
+
+<AccordionGroup>
+  <Accordion title="Test handlers as plain functions">
+    Prefer unit tests that call handlers directly without HTTP mocking. This makes tests faster and more focused.
+  </Accordion>
+
+  <Accordion title="Use httptest for integration tests">
+    Use httptest when you need to test the full HTTP adapter behavior, including status codes and headers.
+  </Accordion>
+
+  <Accordion title="Use table-driven tests">
+    Table-driven tests make it easy to cover many cases with minimal code duplication.
+  </Accordion>
+
+  <Accordion title="Mock external dependencies">
+    Use dependency injection to make handlers testable without real databases or external services.
+  </Accordion>
+
+  <Accordion title="Test error cases">
+    Always test error cases to ensure your handlers handle failures gracefully.
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  Check the [tests directory](https://github.com/sohamratnaparkhi/go-fast/tree/main/tests) for more examples of testing go-fast handlers.
+</Tip>

@@ -1,0 +1,204 @@
+---
+title: Query resolver
+description: Extract URL query parameters
+---
+
+The query resolver extracts a value from URL query parameters.
+
+## Tag syntax
+
+```go
+json:"query:<param-name>"
+```
+
+<ParamField path="param-name" type="string" required>
+  The name of the query parameter to extract
+</ParamField>
+
+## Supported types
+
+- `string`
+- `bool`
+- `int`, `int8`, `int16`, `int32`, `int64`
+- `uint`, `uint8`, `uint16`, `uint32`, `uint64`
+- `float32`, `float64`
+- Pointers to any of the above types
+
+## Basic example
+
+```go
+func SearchUsers(req struct {
+    Query  string `json:"query:q"`
+    Page   int    `json:"query:page"`
+    Active bool   `json:"query:active"`
+}) (*SearchResult, error) {
+    return &SearchResult{
+        Query:  req.Query,
+        Page:   req.Page,
+        Active: req.Active,
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+# GET /search?q=john&page=2&active=true
+curl 'localhost:8080/search?q=john&page=2&active=true'
+
+# Response:
+{
+  "query": "john",
+  "page": 2,
+  "active": true
+}
+```
+
+## Type conversion
+
+Query parameters are automatically converted from strings to your declared type:
+
+```go
+func ListProducts(req struct {
+    Category string  `json:"query:category"`
+    MinPrice float64 `json:"query:min_price"`
+    MaxPrice float64 `json:"query:max_price"`
+    InStock  bool    `json:"query:in_stock"`
+}) (*ProductList, error) {
+    // ?category=electronics&min_price=10.50&max_price=100&in_stock=true
+    // req.Category = "electronics"
+    // req.MinPrice = 10.5
+    // req.MaxPrice = 100.0
+    // req.InStock  = true
+}
+```
+
+## Optional parameters with pointers
+
+Use pointer types to distinguish between missing parameters and zero values:
+
+```go
+func SearchUsers(req struct {
+    Query string `json:"query:q"`     // Required (empty string if missing)
+    Page  *int   `json:"query:page"`  // Optional (nil if missing)
+    Limit *int   `json:"query:limit"` // Optional (nil if missing)
+}) (*SearchResult, error) {
+    page := 1
+    if req.Page != nil {
+        page = *req.Page
+    }
+    
+    limit := 10
+    if req.Limit != nil {
+        limit = *req.Limit
+    }
+    
+    // Use page and limit with defaults
+}
+```
+
+## Behavior
+
+<ParamField path="Implementation" type="Details">
+  Reads via `request.URL.Query().Get(name)`
+</ParamField>
+
+<ParamField path="Missing parameters" type="Zero values">
+  Missing params resolve to the zero value:
+  - `string`: `""`
+  - `int`: `0`
+  - `bool`: `false`
+  - Pointer types: `nil`
+</ParamField>
+
+<ParamField path="Type conversion" type="Automatic">
+  Uses `strconv` package for conversion. Returns 400 if conversion fails (e.g., `?page=abc` for an `int` field)
+</ParamField>
+
+<ParamField path="Multiple values" type="Limitation">
+  Only reads the first value for a given key. Multi-value support (e.g., `?id=1&id=2&id=3`) is not yet available.
+</ParamField>
+
+## Common use cases
+
+**Pagination:**
+```go
+func ListUsers(req struct {
+    Page  int `json:"query:page"`
+    Limit int `json:"query:limit"`
+}) (*UserList, error) {
+    // ?page=2&limit=50
+    offset := (req.Page - 1) * req.Limit
+    // Fetch users with offset/limit
+}
+```
+
+**Filtering:**
+```go
+func ListOrders(req struct {
+    Status    string `json:"query:status"`
+    MinAmount float64 `json:"query:min_amount"`
+    After     string `json:"query:after"` // ISO date
+}) (*OrderList, error) {
+    // ?status=completed&min_amount=100&after=2024-01-01
+}
+```
+
+**Search:**
+```go
+func Search(req struct {
+    Q        string `json:"query:q"`
+    Sort     string `json:"query:sort"`
+    Order    string `json:"query:order"` // asc/desc
+}) (*SearchResult, error) {
+    // ?q=laptop&sort=price&order=asc
+}
+```
+
+## Comparison with other frameworks
+
+| Framework | Code |
+|-----------|------|
+| **go-fast** | `Page int \`json:"query:page"\`` |
+| Gin | `pageStr := c.Query("page"); page, _ := strconv.Atoi(pageStr)` |
+| Fiber | `pageStr := c.Query("page"); page, _ := strconv.Atoi(pageStr)` |
+| net/http | `pageStr := r.URL.Query().Get("page"); page, _ := strconv.Atoi(pageStr)` |
+
+go-fast eliminates the manual `strconv` call. Declare the type, get the type.
+
+## Edge cases
+
+**Empty values:**
+```bash
+# ?page= (empty value)
+curl 'localhost:8080/api?page='
+# req.Page = 0 (zero value for int)
+```
+
+**Invalid type conversion:**
+```bash
+# ?page=abc (invalid int)
+curl 'localhost:8080/api?page=abc'
+# Response: 400 Bad Request
+{"error": "resolve query \"page\": strconv.ParseInt: parsing \"abc\": invalid syntax"}
+```
+
+**Boolean parsing:**
+```bash
+# Accepts: "true", "false", "1", "0", "t", "f", "T", "F"
+curl 'localhost:8080/api?active=true'   # true
+curl 'localhost:8080/api?active=1'      # true
+curl 'localhost:8080/api?active=yes'    # 400 error (invalid)
+```
+
+**Missing vs zero:**
+```go
+// Both resolve to 0 for int fields:
+// 1. Parameter not provided: /api
+// 2. Parameter with value 0: /api?page=0
+
+// Use pointer types to distinguish:
+type Request struct {
+    Page *int `json:"query:page"`
+}
+// nil = not provided, 0 = explicitly set to 0
+```

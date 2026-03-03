@@ -1,0 +1,374 @@
+---
+title: File resolver
+description: Handle multipart file uploads
+---
+
+The file resolver extracts an uploaded file from a `multipart/form-data` request.
+
+## Tag syntax
+
+```go
+json:"file:<field-name>"
+```
+
+<ParamField path="field-name" type="string" required>
+  The name of the file input field in the multipart form
+</ParamField>
+
+## Field type requirement
+
+The field **must** be `*multipart.FileHeader`. This is validated at startup by `handler.Adapt()`.
+
+```go
+import "mime/multipart"
+
+func UploadAvatar(req struct {
+    Avatar *multipart.FileHeader `json:"file:avatar"`
+}) (*Response, error) {
+    // ...
+}
+```
+
+## Basic example
+
+```go
+func UploadAvatar(req struct {
+    Avatar *multipart.FileHeader `json:"file:avatar"`
+}) (*UploadResponse, error) {
+    // Access file metadata
+    filename := req.Avatar.Filename
+    size := req.Avatar.Size
+    
+    // Open file for reading
+    f, err := req.Avatar.Open()
+    if err != nil {
+        return nil, err
+    }
+    defer f.Close()
+    
+    // Read file content
+    content, err := io.ReadAll(f)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Save to storage
+    url := saveToStorage(filename, content)
+    
+    return &UploadResponse{
+        Filename: filename,
+        Size:     size,
+        URL:      url,
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+curl -X POST localhost:8080/upload \
+  -F 'avatar=@photo.png'
+```
+
+## FileHeader fields
+
+The `*multipart.FileHeader` provides access to file metadata:
+
+<ParamField path="Filename" type="string">
+  Original filename from the client (e.g., `"photo.png"`)
+</ParamField>
+
+<ParamField path="Size" type="int64">
+  File size in bytes
+</ParamField>
+
+<ParamField path="Header" type="textproto.MIMEHeader">
+  MIME headers from the multipart section (e.g., `Content-Type`)
+</ParamField>
+
+**Example:**
+```go
+filename := req.Avatar.Filename // "photo.png"
+size := req.Avatar.Size         // 4096
+contentType := req.Avatar.Header.Get("Content-Type") // "image/png"
+```
+
+## Combined with form fields
+
+File and form resolvers work together for multipart uploads with metadata:
+
+```go
+func UploadDocument(req struct {
+    Title       string                `json:"form:title"`
+    Description string                `json:"form:description"`
+    Category    string                `json:"form:category"`
+    Document    *multipart.FileHeader `json:"file:document"`
+}) (*UploadResponse, error) {
+    // Save file with metadata
+    url := saveDocument(req.Document, req.Title, req.Category)
+    
+    return &UploadResponse{
+        Title:    req.Title,
+        Filename: req.Document.Filename,
+        Size:     req.Document.Size,
+        URL:      url,
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+curl -X POST localhost:8080/upload \
+  -F 'title=Q4 Report' \
+  -F 'description=Financial analysis' \
+  -F 'category=finance' \
+  -F 'document=@report.pdf'
+```
+
+## Multiple file uploads
+
+To handle multiple files, define separate fields:
+
+```go
+func UploadGallery(req struct {
+    Photo1 *multipart.FileHeader `json:"file:photo1"`
+    Photo2 *multipart.FileHeader `json:"file:photo2"`
+    Photo3 *multipart.FileHeader `json:"file:photo3"`
+}) (*Response, error) {
+    // Process each file
+    urls := []string{
+        savePhoto(req.Photo1),
+        savePhoto(req.Photo2),
+        savePhoto(req.Photo3),
+    }
+    return &Response{URLs: urls}, nil
+}
+```
+
+**Note:** Array support (e.g., `[]*multipart.FileHeader`) for variable-length uploads is not yet available.
+
+## Behavior
+
+<ParamField path="Implementation" type="Details">
+  - Calls `request.ParseMultipartForm(32MB)` to parse the form
+  - Reads from `request.MultipartForm.File[name]`
+  - Returns the first file if multiple files have the same field name
+</ParamField>
+
+<ParamField path="Missing file" type="Error">
+  Returns 400 Bad Request if the file is missing (required — like path and cookie)
+</ParamField>
+
+<ParamField path="Content type validation" type="Error">
+  Returns 400 if the content type is not `multipart/form-data`
+</ParamField>
+
+<ParamField path="Memory limit" type="32 MB">
+  Files up to 32 MB are stored in memory. Larger files are written to temporary disk storage automatically.
+</ParamField>
+
+<ParamField path="File not opened" type="Important">
+  The resolver returns the `*FileHeader` directly without opening the file. You control when to read the file content using `Open()`.
+</ParamField>
+
+<ParamField path="Restrictions" type="Important">
+  - **Cannot be combined with `json:"body"`** — both consume the request body
+  - **Can** be combined with `json:"form:..."` for mixed field+file multipart uploads
+</ParamField>
+
+## Startup validation
+
+`handler.Adapt()` rejects the handler at startup if:
+
+1. The file field type is not `*multipart.FileHeader`:
+```go
+func Bad(req struct {
+    File string `json:"file:document"` // ERROR: must be *multipart.FileHeader
+}) error
+```
+
+2. The struct mixes `json:"body"` with `json:"file:..."`:
+```go
+func Bad(req struct {
+    Body CreateRequest       `json:"body"`      // ERROR: can't use both
+    File *multipart.FileHeader `json:"file:doc"` // ERROR: can't use both
+}) error
+```
+
+## Common use cases
+
+**Profile picture upload:**
+```go
+func UpdateAvatar(req struct {
+    UserID int                   `json:"path:user_id"`
+    Avatar *multipart.FileHeader `json:"file:avatar"`
+}) (*User, error) {
+    // Validate file type
+    contentType := req.Avatar.Header.Get("Content-Type")
+    if !strings.HasPrefix(contentType, "image/") {
+        return nil, fmt.Errorf("file must be an image")
+    }
+    
+    // Validate file size (max 5 MB)
+    if req.Avatar.Size > 5*1024*1024 {
+        return nil, fmt.Errorf("file too large")
+    }
+    
+    // Save to S3/storage
+    url := uploadToS3(req.Avatar)
+    
+    // Update user record
+    user := db.UpdateUserAvatar(req.UserID, url)
+    return user, nil
+}
+```
+
+**Document upload with validation:**
+```go
+func UploadDocument(req struct {
+    Title    string                `json:"form:title"`
+    Document *multipart.FileHeader `json:"file:document"`
+}) (*Document, error) {
+    // Validate file extension
+    ext := filepath.Ext(req.Document.Filename)
+    allowed := map[string]bool{".pdf": true, ".docx": true, ".txt": true}
+    if !allowed[ext] {
+        return nil, fmt.Errorf("file type not allowed: %s", ext)
+    }
+    
+    // Scan for viruses (example)
+    f, _ := req.Document.Open()
+    defer f.Close()
+    if scanResult := virusScanner.Scan(f); !scanResult.Safe {
+        return nil, fmt.Errorf("file failed security scan")
+    }
+    
+    // Save document
+    doc := saveDocument(req.Title, req.Document)
+    return doc, nil
+}
+```
+
+**CSV import:**
+```go
+func ImportUsers(req struct {
+    CSV *multipart.FileHeader `json:"file:csv"`
+}) (*ImportResult, error) {
+    // Open CSV file
+    f, err := req.CSV.Open()
+    if err != nil {
+        return nil, err
+    }
+    defer f.Close()
+    
+    // Parse CSV
+    reader := csv.NewReader(f)
+    records, err := reader.ReadAll()
+    if err != nil {
+        return nil, fmt.Errorf("invalid CSV: %w", err)
+    }
+    
+    // Import users
+    imported := 0
+    for _, record := range records[1:] { // skip header
+        if err := createUser(record[0], record[1]); err == nil {
+            imported++
+        }
+    }
+    
+    return &ImportResult{Imported: imported, Total: len(records)-1}, nil
+}
+```
+
+## Comparison with other frameworks
+
+| Framework | Code |
+|-----------|------|
+| **go-fast** | `Avatar *multipart.FileHeader \`json:"file:avatar"\`` |
+| Gin | `file, err := c.FormFile("avatar"); if err != nil { ... }` |
+| Fiber | `file, err := c.FormFile("avatar"); if err != nil { ... }` |
+| net/http | `r.ParseMultipartForm(32MB); file := r.MultipartForm.File["avatar"][0]` |
+
+## Edge cases
+
+**Missing file:**
+```bash
+curl -X POST localhost:8080/upload -F 'title=Report'
+# Response: 400 Bad Request
+{"error": "resolve file \"document\": file not found"}
+```
+
+**Wrong content type:**
+```bash
+curl -X POST localhost:8080/upload \
+  -H 'Content-Type: application/json' \
+  -d '{"file":"test"}'
+# Response: 400 Bad Request
+{"error": "resolve file \"document\": request Content-Type isn't multipart/form-data"}
+```
+
+**Multiple files same name:**
+If the client sends multiple files with the same field name, only the first is returned:
+```bash
+curl -X POST localhost:8080/upload \
+  -F 'doc=@file1.pdf' \
+  -F 'doc=@file2.pdf'
+# req.Document.Filename = "file1.pdf" (first file only)
+```
+
+**Empty filename:**
+If the client sends a file with no filename:
+```go
+req.Document.Filename // ""
+req.Document.Size     // 0 or actual size
+```
+
+**Special characters in filename:**
+Filenames are preserved as-is from the client. Sanitize before use:
+```go
+filename := filepath.Base(req.Document.Filename) // Remove path
+filename = strings.ReplaceAll(filename, " ", "_") // Remove spaces
+// Save with sanitized filename
+```
+
+## Security considerations
+
+**Always validate file uploads:**
+
+1. **File size:** Enforce maximum file size to prevent DoS
+2. **File type:** Check MIME type and extension
+3. **Filename:** Sanitize to prevent path traversal
+4. **Content:** Scan for malware/viruses
+5. **Rate limiting:** Limit upload frequency per user
+
+```go
+func UploadFile(req struct {
+    File *multipart.FileHeader `json:"file:upload"`
+}) (*Response, error) {
+    // 1. Size check
+    if req.File.Size > 10*1024*1024 { // 10 MB
+        return nil, fmt.Errorf("file too large")
+    }
+    
+    // 2. Type check
+    contentType := req.File.Header.Get("Content-Type")
+    if !isAllowedType(contentType) {
+        return nil, fmt.Errorf("file type not allowed")
+    }
+    
+    // 3. Filename sanitization
+    safeName := sanitizeFilename(req.File.Filename)
+    
+    // 4. Content validation
+    f, _ := req.File.Open()
+    defer f.Close()
+    if err := validateFileContent(f); err != nil {
+        return nil, err
+    }
+    
+    // 5. Save with unique name
+    uniqueName := fmt.Sprintf("%s_%s", uuid.New(), safeName)
+    saveFile(uniqueName, f)
+    
+    return &Response{Filename: uniqueName}, nil
+}
+```

@@ -1,0 +1,265 @@
+---
+title: Form resolver
+description: Extract form data from POST body
+---
+
+The form resolver extracts a value from the POST body of a form submission.
+
+## Tag syntax
+
+```go
+json:"form:<field-name>"
+```
+
+<ParamField path="field-name" type="string" required>
+  The name of the form field to extract
+</ParamField>
+
+## Supported types
+
+- `string`
+- `bool`
+- `int`, `int8`, `int16`, `int32`, `int64`
+- `uint`, `uint8`, `uint16`, `uint32`, `uint64`
+- `float32`, `float64`
+- Pointers to any of the above types
+
+## Basic example
+
+```go
+func SubmitContact(req struct {
+    Name    string `json:"form:name"`
+    Email   string `json:"form:email"`
+    Message string `json:"form:message"`
+}) (*ContactResponse, error) {
+    return &ContactResponse{
+        Name:    req.Name,
+        Email:   req.Email,
+        Message: req.Message,
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+# application/x-www-form-urlencoded (default)
+curl -X POST localhost:8080/contact \
+  -d 'name=Alice&email=alice@example.com&message=Hello!'
+
+# Response:
+{
+  "name": "Alice",
+  "email": "alice@example.com",
+  "message": "Hello!"
+}
+```
+
+## Type conversion
+
+Form values are automatically converted from strings to your declared type:
+
+```go
+func CreateProduct(req struct {
+    Name     string  `json:"form:name"`
+    Price    float64 `json:"form:price"`
+    Quantity int     `json:"form:quantity"`
+    Active   bool    `json:"form:active"`
+}) (*Product, error) {
+    // name=Widget&price=19.99&quantity=100&active=true
+    // req.Name     = "Widget"
+    // req.Price    = 19.99
+    // req.Quantity = 100
+    // req.Active   = true
+}
+```
+
+## Content types
+
+The form resolver works with both `application/x-www-form-urlencoded` and `multipart/form-data`:
+
+**URL-encoded:**
+```bash
+curl -X POST localhost:8080/submit \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'name=Alice&age=30'
+```
+
+**Multipart:**
+```bash
+curl -X POST localhost:8080/submit \
+  -F 'name=Alice' \
+  -F 'age=30'
+```
+
+## Combined with file upload
+
+Form and file resolvers work together for multipart uploads:
+
+```go
+func UploadDocument(req struct {
+    Title       string                `json:"form:title"`
+    Description string                `json:"form:description"`
+    Document    *multipart.FileHeader `json:"file:document"`
+}) (*UploadResponse, error) {
+    return &UploadResponse{
+        Title:    req.Title,
+        Filename: req.Document.Filename,
+        Size:     req.Document.Size,
+    }, nil
+}
+```
+
+**cURL example:**
+```bash
+curl -X POST localhost:8080/upload \
+  -F 'title=My Report' \
+  -F 'description=Q4 Financial Report' \
+  -F 'document=@report.pdf'
+```
+
+## Behavior
+
+<ParamField path="Implementation" type="Details">
+  Reads via `request.PostFormValue(name)` (POST body only, not URL query parameters)
+</ParamField>
+
+<ParamField path="Missing fields" type="Zero values">
+  Missing fields return zero values (like header/query — not an error):
+  - `string`: `""`
+  - `int`: `0`
+  - `bool`: `false`
+  - Pointer types: `nil`
+</ParamField>
+
+<ParamField path="Type conversion" type="Automatic">
+  Uses `strconv` package for conversion. Returns 400 if conversion fails (e.g., `"abc"` to `int`)
+</ParamField>
+
+<ParamField path="Restrictions" type="Important">
+  **Cannot be combined with `json:"body"`** — both consume the request body. Use either form fields OR JSON body, not both.
+</ParamField>
+
+<ParamField path="POST body only" type="Note">
+  `PostFormValue` reads from the POST body only, not from URL query parameters. This is different from `FormValue` which checks both.
+</ParamField>
+
+## Common use cases
+
+**Contact form:**
+```go
+func SubmitContact(req struct {
+    Name    string `json:"form:name"`
+    Email   string `json:"form:email"`
+    Subject string `json:"form:subject"`
+    Message string `json:"form:message"`
+}) error {
+    // Validate and send email
+    return sendEmail(req.Email, req.Subject, req.Message)
+}
+```
+
+**Login form:**
+```go
+func Login(req struct {
+    Username string `json:"form:username"`
+    Password string `json:"form:password"`
+    Remember bool   `json:"form:remember"`
+}) (*LoginResponse, error) {
+    user := authenticate(req.Username, req.Password)
+    if user == nil {
+        return nil, fmt.Errorf("invalid credentials")
+    }
+    
+    session := createSession(user.ID, req.Remember)
+    return &LoginResponse{Token: session.Token}, nil
+}
+```
+
+**Search form:**
+```go
+func Search(req struct {
+    Query    string  `json:"form:q"`
+    Category string  `json:"form:category"`
+    MinPrice float64 `json:"form:min_price"`
+    MaxPrice float64 `json:"form:max_price"`
+}) (*SearchResults, error) {
+    return db.Search(req.Query, req.Category, req.MinPrice, req.MaxPrice), nil
+}
+```
+
+## Comparison with other frameworks
+
+| Framework | Code |
+|-----------|------|
+| **go-fast** | `Name string \`json:"form:name"\`` |
+| Gin | `name := c.PostForm("name")` |
+| Fiber | `name := c.FormValue("name")` |
+| net/http | `name := r.PostFormValue("name")` |
+
+## Edge cases
+
+**Empty values:**
+```bash
+curl -X POST localhost:8080/submit -d 'name=&age='
+# req.Name = ""
+# req.Age  = 0 (converted from empty string)
+```
+
+**Invalid type conversion:**
+```bash
+curl -X POST localhost:8080/submit -d 'age=abc'
+# Response: 400 Bad Request
+{"error": "resolve form \"age\": strconv.ParseInt: parsing \"abc\": invalid syntax"}
+```
+
+**URL encoding:**
+Form values are automatically URL-decoded:
+```bash
+curl -X POST localhost:8080/submit -d 'name=John%20Doe'
+# req.Name = "John Doe"
+```
+
+**Multiple values:**
+Currently only the first value is returned for duplicate field names:
+```bash
+curl -X POST localhost:8080/submit -d 'tag=go&tag=web'
+# req.Tag = "go" (first value only)
+```
+
+**Mixing with query params:**
+`PostFormValue` only reads from the POST body, not URL query parameters:
+```bash
+# POST /submit?name=Alice with body: age=30
+curl -X POST 'localhost:8080/submit?name=Alice' -d 'age=30'
+
+# For: Name string `json:"form:name"`
+# req.Name = "" (not read from query params)
+
+# For: Age int `json:"form:age"`
+# req.Age = 30 (read from POST body)
+```
+
+To read from query params, use `json:"query:name"` instead.
+
+## Form vs JSON body
+
+| Feature | Form resolver | Body resolver |
+|---------|---------------|---------------|
+| Content type | `application/x-www-form-urlencoded` or `multipart/form-data` | `application/json` |
+| Tag syntax | `json:"form:name"` | `json:"body"` |
+| Type conversion | Automatic (like query/header) | Standard JSON unmarshaling |
+| Nested objects | Not supported | Fully supported |
+| File uploads | Use with `json:"file:..."` | Not supported |
+| Can combine with files | Yes | No |
+
+**When to use form resolver:**
+- HTML form submissions
+- File uploads with metadata
+- Legacy systems expecting form data
+- Browser-based forms without JavaScript
+
+**When to use body resolver:**
+- Modern APIs with JSON
+- Complex nested data structures
+- Single-page applications (SPAs)
+- Mobile app backends

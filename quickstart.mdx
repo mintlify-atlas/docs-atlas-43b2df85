@@ -1,80 +1,306 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Build your first go-fast handler in 5 minutes
 ---
 
-## Get started in three steps
+This guide walks you through creating a complete working handler with go-fast, from installation to testing.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+- Go 1.18 or later
+- Basic familiarity with Go and HTTP handlers
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Install go-fast
+
+<Steps>
+  <Step title="Install the package">
+    ```bash
+    go get github.com/sohamratnaparkhi/go-fast
+    ```
+  </Step>
+  
+  <Step title="Create a new Go file">
+    Create `main.go` in your project directory:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    touch main.go
+    ```
+  </Step>
+</Steps>
+
+## Write your first handler
+
+Let's build a user creation endpoint that accepts JSON and reads an authorization header.
+
+<Steps>
+  <Step title="Define request and response types">
+    ```go
+    package main
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    import (
+        "fmt"
+        "net/http"
+        
+        "github.com/sohamratnaparkhi/go-fast/pkg/handler"
+    )
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    type CreateUserRequest struct {
+        Name  string `json:"name"`
+        Email string `json:"email"`
+    }
+    
+    type UserResponse struct {
+        ID    string `json:"id"`
+        Name  string `json:"name"`
+        Email string `json:"email"`
+    }
+    ```
+    
+    These are standard Go structs with JSON tags. Nothing framework-specific here.
+  </Step>
+  
+  <Step title="Write the handler function">
+    ```go
+    func CreateUser(req struct {
+        Body  CreateUserRequest `json:"body"`
+        Token string            `json:"header:Authorization"`
+    }) (*UserResponse, error) {
+        fmt.Println("Token:", req.Token)
+        return &UserResponse{
+            ID:    "user_123",
+            Name:  req.Body.Name,
+            Email: req.Body.Email,
+        }, nil
+    }
+    ```
+    
+    <Tip>
+      The struct parameter uses tags to declare requirements:
+      - `json:"body"` reads the entire JSON request body
+      - `json:"header:Authorization"` extracts the Authorization header
+    </Tip>
+    
+    Notice there's no manual parsing, no error handling for malformed JSON, and no response writing. go-fast handles all of that.
+  </Step>
+  
+  <Step title="Wire the handler">
+    ```go
+    func main() {
+        h, err := handler.Adapt(CreateUser)
+        if err != nil {
+            panic(err)
+        }
+        
+        http.HandleFunc("/users", h)
+        fmt.Println("Server running on :8080")
+        http.ListenAndServe(":8080", nil)
+    }
+    ```
+    
+    `handler.Adapt()` inspects your function at startup, builds resolvers for each struct tag, and returns a standard `http.HandlerFunc`.
+  </Step>
+</Steps>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+## Run and test
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Start the server">
+    ```bash
+    go run main.go
+    ```
+    
+    You should see:
+    ```
+    Server running on :8080
+    ```
+  </Step>
+  
+  <Step title="Make a request">
+    ```bash
+    curl -X POST localhost:8080/users \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer my-token" \
+      -d '{"name":"John","email":"john@test.com"}'
+    ```
+  </Step>
+  
+  <Step title="See the response">
+    ```json Response
+    {
+      "id": "user_123",
+      "name": "John",
+      "email": "john@test.com"
+    }
+    ```
+    
+    Server output:
+    ```
+    Token: Bearer my-token
+    ```
+  </Step>
+</Steps>
 
-### Step 3: Go live
+<Check>
+  That's it! You've built a complete HTTP handler with body parsing, header extraction, error handling, and JSON response writing—all in 30 lines of code.
+</Check>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+## What just happened?
+
+When you called `handler.Adapt(CreateUser)`, go-fast:
+
+1. Inspected the function signature using reflection (once at startup)
+2. Read the struct tags on the input parameter
+3. Built resolvers for `json:"body"` and `json:"header:Authorization"`
+4. Returned an `http.HandlerFunc` closure that:
+   - Creates a new instance of the input struct for each request
+   - Resolves each field from the appropriate source (body, header, etc.)
+   - Calls your function with the populated struct
+   - Writes the return value as JSON or the error as a 500
+
+Reflection only runs once. The per-request path is a pre-built closure with no reflection overhead.
+
+## Try more resolver types
+
+go-fast supports 7 resolver types. Here's a handler that uses 5 of them:
+
+```go Kitchen sink example
+type OrderBody struct {
+    Item     string  `json:"item"`
+    Quantity int     `json:"quantity"`
+    Price    float64 `json:"price"`
+}
+
+type OrderResponse struct {
+    UserID    int     `json:"user_id"`
+    Item      string  `json:"item"`
+    Quantity  int     `json:"quantity"`
+    Price     float64 `json:"price"`
+    Currency  string  `json:"currency"`
+    Token     string  `json:"token"`
+    SessionID string  `json:"session_id"`
+}
+
+func CreateOrder(req struct {
+    Body     OrderBody `json:"body"`           // JSON body
+    UserID   int       `json:"path:user_id"`   // Path variable
+    Currency string    `json:"query:currency"` // Query param
+    Token    string    `json:"header:Authorization"` // Header
+    Session  string    `json:"cookie:sid"`     // Cookie
+}) (*OrderResponse, error) {
+    return &OrderResponse{
+        UserID:    req.UserID,
+        Item:      req.Body.Item,
+        Quantity:  req.Body.Quantity,
+        Price:     req.Body.Price,
+        Currency:  req.Currency,
+        Token:     req.Token,
+        SessionID: req.Session,
+    }, nil
+}
+```
+
+<Note>
+  Path variables require a router that populates request context. See the [Path Variables](/resolvers/path) guide for details.
+</Note>
+
+Test it:
+
+```bash
+curl -X POST 'localhost:8080/orders?currency=USD' \
+  -H 'Authorization: Bearer tok' \
+  -b 'sid=sess-abc' \
+  -d '{"item":"widget","quantity":3,"price":9.99}'
+```
+
+## Type conversion example
+
+Query params, headers, path variables, and cookies are automatically converted to the declared type:
+
+```go Query parameter types
+func SearchUsers(req struct {
+    Query  string `json:"query:q"`      // string
+    Page   int    `json:"query:page"`   // converted to int
+    Active bool   `json:"query:active"` // converted to bool
+}) (*SearchResult, error) {
+    return &SearchResult{
+        Query:  req.Query,
+        Page:   req.Page,
+        Active: req.Active,
+    }, nil
+}
+```
+
+Test it:
+
+```bash
+curl 'localhost:8080/search?q=john&page=2&active=true'
+```
+
+Response:
+
+```json
+{
+  "query": "john",
+  "page": 2,
+  "active": true
+}
+```
+
+go-fast automatically converts `"2"` to `int` and `"true"` to `bool`. If conversion fails, it returns a 400 Bad Request.
+
+## File upload example
+
+Handle multipart form uploads with the `json:"form:<name>"` and `json:"file:<name>"` tags:
+
+```go File upload handler
+import "mime/multipart"
+
+type UploadResponse struct {
+    Title    string `json:"title"`
+    Filename string `json:"filename"`
+    Size     int64  `json:"size"`
+}
+
+func UploadDocument(req struct {
+    Title    string                `json:"form:title"`
+    Document *multipart.FileHeader `json:"file:document"`
+}) (*UploadResponse, error) {
+    return &UploadResponse{
+        Title:    req.Title,
+        Filename: req.Document.Filename,
+        Size:     req.Document.Size,
+    }, nil
+}
+```
+
+<Tip>
+  File fields must be `*multipart.FileHeader`. This is validated at startup.
+</Tip>
+
+Test it:
+
+```bash
+curl -X POST localhost:8080/upload \
+  -F 'title=My Report' \
+  -F 'document=@report.pdf'
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Resolvers" icon="puzzle-piece" href="/resolvers/overview">
+    Learn about all 7 resolver types in detail
+  </Card>
+  
+  <Card title="Type conversion" icon="arrows-rotate" href="/concepts/type-conversion">
+    Understand automatic type conversion and supported types
+  </Card>
+  
+  <Card title="Error handling" icon="circle-exclamation" href="/guides/error-handling">
+    Control error responses and status codes
+  </Card>
+  
+  <Card title="Examples" icon="code" href="/guides/examples">
+    Browse more real-world examples
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

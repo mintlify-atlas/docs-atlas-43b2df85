@@ -1,0 +1,250 @@
+---
+title: Adapter
+description: How handler.Adapt() transforms your typed functions into http.HandlerFunc
+---
+
+The adapter is the glue that connects your handler function to the HTTP server. It's the single function you call: `handler.Adapt(fn)`.
+
+## API
+
+```go
+func Adapt(fn interface{}) (http.HandlerFunc, error)
+```
+
+Takes any function with a single struct input, returns a standard `http.HandlerFunc`.
+
+## What it does
+
+### At startup (once)
+
+<Steps>
+  <Step title="Analyze">
+    Inspects the function via reflection: input types, output types, whether it returns an error.
+  </Step>
+  
+  <Step title="Build resolvers">
+    Reads struct tags on the input type, creates a typed resolver for each field.
+  </Step>
+  
+  <Step title="Validate">
+    Rejects invalid signatures (non-function, multiple inputs, non-struct input, duplicate body tags, empty tag names, unexported tagged fields).
+  </Step>
+</Steps>
+
+### Per request (closure)
+
+<Steps>
+  <Step title="Create struct">
+    Create a new zero-value instance of the input struct.
+  </Step>
+  
+  <Step title="Resolve body">
+    Resolve the body field first (if present) since it consumes the request body stream.
+  </Step>
+  
+  <Step title="Resolve other fields">
+    Resolve all other fields (header, query, path, cookie, form, file) in any order.
+  </Step>
+  
+  <Step title="Call handler">
+    Call the handler function with the populated struct.
+  </Step>
+  
+  <Step title="Handle error">
+    If the function returns an error, write a 500 JSON error response.
+  </Step>
+  
+  <Step title="Write response">
+    If the function returns a value, write it as JSON with 200. If it returns nothing (no non-error outputs), write 204 No Content.
+  </Step>
+</Steps>
+
+## Handler signatures
+
+### Value + error (most common)
+
+```go
+func Handler(req Input) (*Output, error)
+```
+
+Returns both a result and potential error. The adapter writes 500 if error is non-nil, otherwise encodes the result as JSON.
+
+### Value only (no error possible)
+
+```go
+func Handler(req Input) *Output
+```
+
+For handlers that cannot fail. The adapter always writes 200 with the JSON-encoded result.
+
+### Error only (side-effect handler)
+
+```go
+func Handler(req Input) error
+```
+
+For operations that don't return data (create, update, delete). The adapter writes 500 on error, 204 No Content on success.
+
+### No return (fire-and-forget)
+
+```go
+func Handler(req Input)
+```
+
+Returns 204 No Content automatically.
+
+<Info>
+  All four signatures are supported. Choose the one that best represents your handler's semantics.
+</Info>
+
+## Error handling
+
+| Error source | HTTP status | When |
+|-------------|-------------|------|
+| Malformed body JSON | 400 | Body resolver fails to decode |
+| Missing path variable | 400 | Path param not in `ctx.Params` |
+| Missing cookie | 400 | Cookie not present in request |
+| Type conversion failure | 400 | e.g., `"abc"` for an `int` field |
+| Handler returns error | 500 | Last return value is non-nil error |
+| Response encoding failure | 500 | JSON marshal of return value fails |
+
+All errors are returned as JSON:
+
+```json
+{"error": "decode body: unexpected EOF"}
+```
+
+<Warning>
+  Client errors (4xx) are for malformed requests. Handler errors (5xx) are for application logic failures. This distinction helps with debugging and monitoring.
+</Warning>
+
+## Startup validation errors
+
+`Adapt()` returns an error (not a panic) for these cases:
+
+- Argument is not a function
+- Function has != 1 input parameter
+- Input parameter is not a struct
+- Tagged field is unexported
+- Multiple `json:"body"` fields
+- Empty tag name (e.g., `json:"header:"`)
+- Mixing body with form/file fields
+
+<Note>
+  Invalid handlers are caught at **server startup**, not at request time. This means you'll see the error in your logs immediately when the server starts, not when the first request arrives.
+</Note>
+
+## Implementation
+
+```go pkg/handler/adapter.go
+func Adapt(fn interface{}) (http.HandlerFunc, error) {
+    // 1. Analyze function signature
+    meta, err := Analyze(fn)
+    if err != nil {
+        return nil, err
+    }
+
+    // 2. Validate single struct input
+    if meta.NumInputs != 1 {
+        return nil, fmt.Errorf("handler must have exactly 1 input, got %d", meta.NumInputs)
+    }
+
+    inputType := meta.InputTypes[0]
+    if inputType.Kind() != reflect.Struct {
+        return nil, fmt.Errorf("handler input must be a struct, got %s", inputType.Kind())
+    }
+
+    // 3. Build resolvers from struct tags
+    resolvers, bodyFieldIdx, err := buildResolvers(inputType)
+    if err != nil {
+        return nil, err
+    }
+
+    // 4. Return closure with captured metadata and resolvers
+    return func(w http.ResponseWriter, r *http.Request) {
+        ctx := &Context{Request: r, Params: map[string]string{}}
+        paramValue := reflect.New(inputType).Elem()
+
+        // Resolve body first (consumes request.Body stream)
+        if bodyFieldIdx >= 0 {
+            bodyResolver := resolverByFieldIndex(resolvers, bodyFieldIdx)
+            val, resolveErr := bodyResolver.Resolve(ctx)
+            if resolveErr != nil {
+                writeError(w, http.StatusBadRequest, resolveErr.Error())
+                return
+            }
+            setResolvedField(paramValue, bodyResolver.FieldIndex(), val)
+        }
+
+        // Resolve all other fields
+        for _, resolver := range resolvers {
+            if resolver.FieldIndex() == bodyFieldIdx {
+                continue
+            }
+            val, resolveErr := resolver.Resolve(ctx)
+            if resolveErr != nil {
+                writeError(w, http.StatusBadRequest, resolveErr.Error())
+                return
+            }
+            setResolvedField(paramValue, resolver.FieldIndex(), val)
+        }
+
+        // Call handler
+        results := meta.FuncValue.Call([]reflect.Value{paramValue})
+
+        // Check error return
+        if meta.ReturnsError {
+            errVal := results[len(results)-1]
+            if !errVal.IsNil() {
+                writeError(w, http.StatusInternalServerError, errVal.Interface().(error).Error())
+                return
+            }
+        }
+
+        // Write response
+        nonErrorResults := meta.NumOutputs
+        if meta.ReturnsError {
+            nonErrorResults--
+        }
+
+        if nonErrorResults == 0 {
+            w.WriteHeader(http.StatusNoContent)
+            return
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(results[0].Interface())
+    }, nil
+}
+```
+
+## Usage example
+
+```go
+type CreateUserRequest struct {
+    Body   *User  `json:"body"`
+    APIKey string `json:"header:X-API-Key"`
+}
+
+func CreateUser(req CreateUserRequest) (*User, error) {
+    // Validate API key
+    if req.APIKey != "secret" {
+        return nil, errors.New("unauthorized")
+    }
+    
+    // Create user
+    user := req.Body
+    user.ID = generateID()
+    
+    return user, nil
+}
+
+// Adapt at startup
+handler, err := handler.Adapt(CreateUser)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use with any router
+http.HandleFunc("/users", handler)
+```
