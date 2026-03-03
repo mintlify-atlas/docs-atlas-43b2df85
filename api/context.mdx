@@ -40,11 +40,17 @@ ctx := &Context{
 
 ## Router integration
 
-To enable path variable resolution, your router must populate `Context.Params` with extracted path parameters.
+<Warning>
+  The current implementation creates `Context` with an empty `Params` map. Path variable resolution requires router integration, which is planned but not yet implemented.
+</Warning>
 
-### Example with Chi router
+To use path variables, you'll need to wait for router integration or implement a custom wrapper that injects path parameters into the request context.
 
-```go
+### Planned router integration
+
+Future versions will support popular routers like Chi, Gorilla Mux, and Fiber by populating `Context.Params` with extracted path parameters:
+
+```go Future router integration (not yet available)
 package main
 
 import (
@@ -58,7 +64,7 @@ type GetArticleRequest struct {
 }
 
 func GetArticle(req GetArticleRequest) (Article, error) {
-    // req.ID is automatically parsed from path
+    // req.ID will be automatically parsed from path
     return fetchArticle(req.ID)
 }
 
@@ -66,30 +72,11 @@ func main() {
     r := chi.NewRouter()
     
     h, _ := handler.Adapt(GetArticle)
-    r.Get("/articles/{id}", h)
+    r.Get("/articles/{id}", h)  // Requires router integration
     
     http.ListenAndServe(":8080", r)
 }
 ```
-
-### Custom router integration
-
-If you're using a custom router or a router that go-fast doesn't integrate with, you can manually populate the `Params` map:
-
-```go
-func withPathParams(next http.HandlerFunc, extractParams func(*http.Request) map[string]string) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        // This approach won't work with the current architecture
-        // The Context is created inside the adapted handler
-        // You need router-specific integration
-        next.ServeHTTP(w, r)
-    }
-}
-```
-
-<Note>
-  The `Context` is an internal type created by the adapted handler. Path parameters must be provided through router integration (Chi, Gorilla Mux) rather than middleware.
-</Note>
 
 ## Resolver access
 

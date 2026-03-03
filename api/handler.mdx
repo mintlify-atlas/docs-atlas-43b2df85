@@ -42,18 +42,26 @@ import (
 )
 
 type CreateUserRequest struct {
-    Name  string `json:"body"`
-    Token string `json:"header:Authorization"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
 }
 
 type UserResponse struct {
-    ID   int    `json:"id"`
-    Name string `json:"name"`
+    ID    string `json:"id"`
+    Name  string `json:"name"`
+    Email string `json:"email"`
 }
 
-func CreateUser(req CreateUserRequest) (UserResponse, error) {
+func CreateUser(req struct {
+    Body  CreateUserRequest `json:"body"`
+    Token string            `json:"header:Authorization"`
+}) (*UserResponse, error) {
     // Business logic here
-    return UserResponse{ID: 1, Name: req.Name}, nil
+    return &UserResponse{
+        ID:    "user_123",
+        Name:  req.Body.Name,
+        Email: req.Body.Email,
+    }, nil
 }
 
 func main() {
